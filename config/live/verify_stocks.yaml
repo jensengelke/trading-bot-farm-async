@@ -1,0 +1,8 @@
+type: verify
+symbols:
+  - ticker: IBM
+    exchange: SMART
+    currency: USD
+  - ticker: ENR
+    exchange: IBIS
+    currency: EUR
