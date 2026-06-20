@@ -1,9 +1,12 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict
+from typing import Any, Dict, TYPE_CHECKING
 import logging
 
 from framework.logging_config import get_bot_logger
 from framework.decorators import trace_all_methods
+
+if TYPE_CHECKING:
+    from framework.ib_connection import IBConnectionManager
 
 
 class BotBase(ABC):
@@ -14,7 +17,7 @@ class BotBase(ABC):
     the lifecycle methods.
     """
     
-    def __init__(self, bot_id: str, config: Dict[str, Any], system_config: Any):
+    def __init__(self, bot_id: str, config: Dict[str, Any], system_config: Any, ib_connection_manager: 'IBConnectionManager'):
         """
         Initialize the bot.
         
@@ -22,10 +25,12 @@ class BotBase(ABC):
             bot_id: Unique identifier for this bot instance (from config filename)
             config: Bot-specific configuration from the bot's YAML file
             system_config: System-wide configuration (SystemConfig instance)
+            ib_connection_manager: Shared IB connection manager
         """
         self.bot_id = bot_id
         self.config = config
         self.system_config = system_config
+        self.ib_connection_manager = ib_connection_manager
         self.logger = get_bot_logger(bot_id)
     
     @abstractmethod

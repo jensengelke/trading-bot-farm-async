@@ -1,0 +1,75 @@
+# multipe entry 
+## question
+For my 15 DTE butterlfy trades, I have a hard time determining good entry or stop prices. I don't get a fill quickly when placing the order for all 4 legs.
+
+Once the position is in my portfolio, TWS shows a midprice jumping between -0.2 and +1.00 USD within a few seconds.
+
+The strategies creates the butterfly 15 DTE out at the money with 25 points width of wings. I cannot imagine that there is no volume at these strikes. Is it the four legs? Can I split somehow?
+
+## response
+Ah, that makes total sense. You are trading a classic 3-leg Long Call Butterfly by buying 1 lower strike, selling 2 ATM strikes, and buying 1 higher strike (using a total of 4 contracts).
+
+When you split this exact structure into two vertical spreads, you get:
+
+1. **A Bull Call Spread (Debit):** Buy Lower Strike + Sell ATM Strike.
+2. **A Bear Call Spread (Credit):** Sell ATM Strike + Buy Higher Strike.
+
+You’ve hit on the exact structural dilemma of managing split legs: **execution dependency**. If you set independent take-profit orders on both verticals, one might fill while the other gets left hanging, altering your risk profile completely.
+
+Here is how you can effectively set a **$1.25 \times \text{Initial Debit}$ target** across the split legs without exposing yourself to execution risk.
+
+---
+
+## Method 1: The Automated Way (IBKR Condition Orders)
+
+You don't have to route your Take Profit through the complex multi-leg order book to have it trade as a single unit. Instead, you can use **Interactive Brokers' Condition Orders** to track the overall profit target, but route the exit as two crisp, highly liquid vertical spreads.
+
+Instead of monitoring the jumping option prices, you trigger the exit based on a specific dollar amount or profit threshold in your account.
+
+### How to set it up in TWS:
+
+1. Open the **Order Ticket** for the first vertical spread (e.g., the Bull Call Spread).
+2. Set the order type to **Limit**.
+3. Go to the **Conditions** tab.
+4. Add a condition based on **PNL (Profit and Loss)** or **Portfolio Value**.
+* *Condition:* "If Unrealized PnL of [Bull Call + Bear Call positions] $\ge$ Target Profit Dollar Amount".
+
+
+5. Create a duplicate conditional order for the second vertical spread (the Bear Call Spread) using the exact same trigger.
+
+When your total target is hit, TWS instantly fires both highly liquid vertical limit orders simultaneously. Because verticals have tight spreads, they will fill almost immediately, eliminating the dependency lag.
+
+---
+
+## Method 2: The "Bracket" Method via a Single Combo Group
+
+If you prefer to keep the orders linked directly in the system architecture, you can recreate the 3-leg butterfly inside TWS **strictly for the exit order**.
+
+Even if you enter the trade as two separate vertical spreads to get a fast fill, IBKR’s system recognizes that you hold the underlying legs.
+
+1. Go to the **Strategy Builder** in TWS.
+2. Select your 3 legs to build the complete Butterfly closing order (Sell 1 Lower, Buy 2 ATM, Sell 1 Higher).
+3. Right-click the combo row in your portfolio and select **Attach -> Auto Take Profit**.
+4. Set your Limit price to your exact target:
+
+$$\text{Exit Credit} = 1.25 \times \text{Initial Entry Debit}$$
+
+
+
+### Why this works for Exits (even if it failed for Entries):
+
+While entering a 4-contract/3-leg combo is tough because you are waiting on a market maker to price a complex opening position, **closing** a butterfly at a specific profitable target means your limit price is sitting out there waiting for the market to move *into* it. As the underlying stock moves and the options gain value, your sitting limit order becomes highly attractive to automated market-making algorithms looking to arbitrage the legs.
+
+---
+
+## Method 3: The Underlying Asset Trigger (Most Reliable for Stops & Targets)
+
+Because a 15 DTE butterfly with 25-point wings has a highly predictable risk graph, a $1.25 \times$ profit target usually corresponds to the underlying stock hitting a specific price zone (typically right near your ATM shorts as time decay accelerates).
+
+1. Look at your risk profile graph or calculate at what underlying price your butterfly hits your target value.
+2. Set a **Price Condition** order on both vertical spreads.
+* *Trigger:* "If [Underlying Asset] price hits $X$, route Limit Order to close Vertical 1 AND Limit Order to close Vertical 2."
+
+
+
+This completely bypasses the erratic option midprices and ensures both highly liquid halves of your trade are thrown into the market at the exact same moment.

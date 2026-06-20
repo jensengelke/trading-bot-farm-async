@@ -9,6 +9,7 @@ from framework.bot_base import BotBase
 from framework.config.system_config import SystemConfig
 from framework.logging_config import get_system_logger
 from framework.decorators import trace_all_methods
+from framework.ib_connection import get_ib_connection_manager
 
 
 @trace_all_methods
@@ -32,6 +33,7 @@ class BotManager:
         self.bots: Dict[str, BotBase] = {}
         self.bot_tasks: Dict[str, asyncio.Task] = {}
         self.logger = get_system_logger()
+        self.ib_connection_manager = get_ib_connection_manager()
         
     def discover_bots(self) -> List[str]:
         """
@@ -126,7 +128,7 @@ class BotManager:
         bot_type = config['type']
         
         bot_class = self.load_bot_class(bot_type)
-        bot_instance = bot_class(bot_id, config, self.system_config)
+        bot_instance = bot_class(bot_id, config, self.system_config, self.ib_connection_manager)
         
         return bot_instance
     
@@ -234,6 +236,9 @@ class BotManager:
                 await self.stop_bot(bot_id)
             except Exception as e:
                 print(f"Error stopping bot {bot_id}: {e}")
+        
+        # Disconnect shared IB connection
+        await self.ib_connection_manager.disconnect()
     
     async def run(self) -> None:
         """

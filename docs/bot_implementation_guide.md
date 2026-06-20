@@ -42,16 +42,35 @@ Every bot automatically has access to a logger via `self.logger`. The logger is 
 ```python
 from framework.bot_base import BotBase
 from framework.decorators import trace_all_methods
+from typing import Any, Dict
 
 @trace_all_methods
 class Bot(BotBase):
     """Your bot implementation."""
+    
+    def __init__(self, bot_id: str, config: Dict[str, Any], system_config: Any, ib_connection_manager):
+        """
+        Initialize the bot.
+        
+        Args:
+            bot_id: Unique identifier for this bot instance
+            config: Bot-specific configuration
+            system_config: System-wide configuration
+            ib_connection_manager: Shared IB connection manager
+        """
+        super().__init__(bot_id, config, system_config, ib_connection_manager)
     
     async def start(self) -> None:
         """Start the bot."""
         # Log at different levels
         self.logger.info("Bot starting")
         self.logger.debug("Debug information")
+        
+        # Get shared IB connection
+        host = self.system_config.get("connection.host")
+        port = self.system_config.get("connection.port")
+        client_id = self.system_config.get("connection.client_id")
+        self.ib = await self.ib_connection_manager.connect(host, port, client_id)
         
         try:
             # Your bot logic here
@@ -65,6 +84,9 @@ class Bot(BotBase):
     async def stop(self) -> None:
         """Stop the bot."""
         self.logger.info("Bot stopping")
+        
+        # Don't disconnect - the shared connection is managed by the framework
+        self.ib = None
 ```
 
 ### Log Levels
