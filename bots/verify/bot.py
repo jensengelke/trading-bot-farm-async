@@ -11,6 +11,13 @@ from framework.bot_base import BotBase
 from framework.decorators import trace_all_methods
 from datetime import datetime, timedelta
 
+# Import bot config schema
+try:
+    from bots.verify.config import VerifyBotConfig
+except ImportError:
+    # Fallback if running from different context
+    from .config import VerifyBotConfig
+
 
 @trace_all_methods
 class Bot(BotBase):
@@ -27,11 +34,20 @@ class Bot(BotBase):
         
         Args:
             bot_id: Unique identifier for this bot instance
-            config: Bot-specific configuration
+            config: Bot-specific configuration (raw dict)
             system_config: System-wide configuration
             ib_connection_manager: Shared IB connection manager
         """
         super().__init__(bot_id, config, system_config, ib_connection_manager)
+        
+        # Validate configuration using Pydantic model
+        try:
+            self.validated_config = VerifyBotConfig(**config)
+            self.logger.info("Configuration validated successfully")
+        except Exception as e:
+            self.logger.error(f"Configuration validation failed: {e}", exc_info=True)
+            raise ValueError(f"Invalid configuration for bot {bot_id}: {e}") from e
+        
         self.ib = None
     
     async def _create_contract(self, symbol_config: Dict[str, Any], security_type: str):
