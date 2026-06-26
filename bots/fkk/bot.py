@@ -242,22 +242,80 @@ class Bot(BotBase):
             return False
         
         trading_hours = details[0].tradingHours
+        timezone_id = details[0].timeZoneId
         self.logger.debug(f"SPX trading hours: {trading_hours}")
+        self.logger.debug(f"SPX timezone: {timezone_id}")
         
         # Parse trading hours to check if currently tradeable
-        # Format is typically: "20260624:0930-20260624:1600;20260625:0930-20260625:1600"
-        now = datetime.now()
-        now_str = now.strftime("%Y%m%d:%H%M")
+        # Format: "20260626:0830-20260626:1500;20260627:CLOSED;20260628:CLOSED;..."
+        # The first segment before the semicolon is today's trading hours
         
-        # Simple check: if trading_hours contains "CLOSED", market is closed
-        if "CLOSED" in trading_hours.upper():
-            self.logger.info("SPX market is closed")
+        # Split by semicolon and get the first segment (today)
+        segments = trading_hours.split(';')
+        if not segments:
+            self.logger.warning("Could not parse trading hours")
             return False
         
-        # More sophisticated check would parse the trading hours string
-        # For now, assume if we got here and it's a weekday, it's tradeable
-        self.logger.debug("SPX is tradeable")
-        return True
+        today_segment = segments[0]
+        self.logger.debug(f"Today's trading hours segment: {today_segment}")
+        
+        # Check if today is closed
+        if "CLOSED" in today_segment.upper():
+            self.logger.info("SPX market is closed today")
+            return False
+        
+        # Parse today's segment: "20260626:0830-20260626:1500"
+        # Format: YYYYMMDD:HHMM-YYYYMMDD:HHMM
+        try:
+            # Split by dash to get open and close times
+            parts = today_segment.split('-')
+            if len(parts) != 2:
+                self.logger.warning(f"Unexpected trading hours format: {today_segment}")
+                return False
+            
+            open_part = parts[0]  # "20260626:0830"
+            close_part = parts[1]  # "20260626:1500"
+            
+            # Extract time portions
+            open_time_str = open_part.split(':')[1]  # "0830"
+            close_time_str = close_part.split(':')[1]  # "1500"
+            
+            # Get current time in exchange timezone
+            if timezone_id:
+                try:
+                    exchange_tz = pytz.timezone(timezone_id)
+                    now_exchange = datetime.now(exchange_tz)
+                except pytz.exceptions.UnknownTimeZoneError:
+                    self.logger.warning(f"Unknown timezone: {timezone_id}, using local time")
+                    now_exchange = datetime.now()
+            else:
+                self.logger.warning("No timezone info, using local time")
+                now_exchange = datetime.now()
+            
+            # Parse open and close times
+            open_hour = int(open_time_str[:2])
+            open_minute = int(open_time_str[2:])
+            close_hour = int(close_time_str[:2])
+            close_minute = int(close_time_str[2:])
+            
+            # Create time objects for comparison
+            market_open = now_exchange.replace(hour=open_hour, minute=open_minute, second=0, microsecond=0)
+            market_close = now_exchange.replace(hour=close_hour, minute=close_minute, second=0, microsecond=0)
+            
+            self.logger.info(f"Market hours: {market_open.strftime('%H:%M')} - {market_close.strftime('%H:%M')} {timezone_id}")
+            self.logger.info(f"Current time: {now_exchange.strftime('%H:%M:%S')} {timezone_id}")
+            
+            # Check if current time is within trading hours
+            if market_open <= now_exchange <= market_close:
+                self.logger.info("SPX market is currently open")
+                return True
+            else:
+                self.logger.info("SPX market is currently closed (outside trading hours)")
+                return False
+                
+        except (ValueError, IndexError) as e:
+            self.logger.error(f"Error parsing trading hours: {e}", exc_info=True)
+            return False
     
     async def _check_above_5day_sma(self, spx: Contract, current_price: float) -> bool:
         """
