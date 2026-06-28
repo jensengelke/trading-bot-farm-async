@@ -1,0 +1,68 @@
+# FKK Strategy Bot Configuration
+# This is an example of using the strategy bot with FKK-style entry conditions
+
+type: strategy
+
+# Underlying configuration
+underlying_type: Index
+underlying_symbol: SPX
+underlying_exchange: CBOE
+
+# Expiration configuration
+dte: 30 
+use_exact_dte: false
+
+# Scheduling configuration
+entry_days:
+  - Monday
+  - Tuesday
+  - Wednesday
+  - Thursday
+  - Friday
+
+entry_times:
+  - "13:45"
+
+timezone: America/New_York
+
+# Leg configuration - Bull Put Spread
+legs:
+  - name: center
+    right: call
+    ratio: -2  # Sell
+    strike_selection: delta
+    strike_selection_delta: 0.35
+  
+  - name: top_wing
+    right: call
+    ratio: 1
+    strike_selection: leg_offset
+    strike_selection_parent: center
+    strike_offset: 70
+
+  - name: bottom_wing
+    right: call
+    ratio: 1
+    strike_selection: leg_offset
+    strike_selection_parent: center
+    strike_offset: -70
+    
+# Position sizing
+num_contracts: 1
+
+# Pricing configuration
+mid_price_monitoring_period: 10  # seconds
+min_premium: null  # No minimum (allow any credit)
+max_premium: null  # No maximum
+max_price_adjustments: 4
+
+# Bracket orders (optional)
+stoploss_factor: null
+takeprofit_factor: 1.45
+
+# Exit conditions - all must be met before closing trade
+exit_conditions:
+  - name: position_delta
+    type: position_delta
+    operator: ">="
+    threshold: -0.06

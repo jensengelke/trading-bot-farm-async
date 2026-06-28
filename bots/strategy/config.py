@@ -5,7 +5,7 @@ Defines the Pydantic model for validating strategy bot configuration.
 """
 
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional, List, Literal
+from typing import Optional, List, Literal, Dict, Any
 
 
 class StrategyLegConfig(BaseModel):
@@ -74,6 +74,95 @@ class StrategyLegConfig(BaseModel):
         return v
 
 
+class EntryConditionConfig(BaseModel):
+    """
+    Configuration for a single entry condition.
+    """
+    
+    name: str = Field(..., description="Name of the condition for logging")
+    
+    type: Literal["SMA", "underlying_intraday_move"] = Field(
+        ...,
+        description="Type of condition: 'SMA' or 'underlying_intraday_move'"
+    )
+    
+    # SMA-specific fields
+    period: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Period for SMA calculation (required for SMA type)"
+    )
+    
+    # Common fields
+    operator: Optional[Literal[">", ">=", "<", "<=", "=="]] = Field(
+        default=None,
+        description="Comparison operator (required for all types)"
+    )
+    
+    # Intraday move-specific fields
+    threshold: Optional[float] = Field(
+        default=None,
+        description="Threshold as decimal (e.g., 0.003 for 0.3%, required for underlying_intraday_move)"
+    )
+
+
+class ExitConditionConfig(BaseModel):
+    """
+    Configuration for a single exit condition.
+    """
+    
+    name: str = Field(..., description="Name of the condition for logging")
+    
+    type: Literal["position_delta"] = Field(
+        ...,
+        description="Type of condition: 'position_delta'"
+    )
+    
+    operator: Literal[">", ">=", "<", "<="] = Field(
+        ...,
+        description="Comparison operator"
+    )
+    
+    threshold: float = Field(
+        ...,
+        description="Threshold value for the condition"
+    )
+    
+    @field_validator('period')
+    @classmethod
+    def validate_period(cls, v: Optional[int], info) -> Optional[int]:
+        """Validate that period is specified for SMA type."""
+        if info.data.get('type') == 'SMA' and v is None:
+            raise ValueError("period is required for SMA condition type")
+        if info.data.get('type') != 'SMA' and v is not None:
+            raise ValueError("period should only be specified for SMA condition type")
+        return v
+    
+    @field_validator('threshold')
+    @classmethod
+    def validate_threshold(cls, v: Optional[float], info) -> Optional[float]:
+        """Validate that threshold is specified for intraday move type."""
+        if info.data.get('type') == 'underlying_intraday_move' and v is None:
+            raise ValueError("threshold is required for underlying_intraday_move condition type")
+        if info.data.get('type') != 'underlying_intraday_move' and v is not None:
+            raise ValueError("threshold should only be specified for underlying_intraday_move condition type")
+        return v
+    
+    @field_validator('operator')
+    @classmethod
+    def validate_operator(cls, v: Optional[str], info) -> Optional[str]:
+        """Validate that operator is specified."""
+        if v is None:
+            raise ValueError("operator is required for all condition types")
+        
+        # For SMA, allow all operators
+        # For intraday move, only allow >, >=, <, <=
+        if info.data.get('type') == 'underlying_intraday_move' and v == '==':
+            raise ValueError("operator '==' is not supported for underlying_intraday_move (use >, >=, <, <=)")
+        
+        return v
+
+
 class StrategyBotConfig(BaseModel):
     """
     Configuration schema for the Strategy bot.
@@ -83,6 +172,12 @@ class StrategyBotConfig(BaseModel):
     """
     
     type: str = Field(..., description="Bot type identifier (must be 'strategy')")
+    
+    # Entry conditions
+    entry_conditions: Optional[List[EntryConditionConfig]] = Field(
+        default=None,
+        description="List of entry conditions that must all be met before placing a trade"
+    )
     
     # Underlying configuration
     underlying_type: Literal["Index", "Stock"] = Field(
@@ -182,6 +277,12 @@ class StrategyBotConfig(BaseModel):
         default=None,
         ge=0.0,
         description="Take profit factor (multiplier of initial premium)"
+    )
+    
+    # Exit conditions
+    exit_conditions: Optional[List[ExitConditionConfig]] = Field(
+        default=None,
+        description="List of exit conditions that trigger early position closure"
     )
     
     @field_validator('type')

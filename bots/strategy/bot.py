@@ -8,11 +8,15 @@ import asyncio
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from ib_async import IB, Index, Stock, Option, Contract, Order, Trade, ComboLeg
-from ib_async.order import LimitOrder, StopOrder
+from ib_async.order import LimitOrder, StopOrder, MarketOrder
 from framework.bot_base import BotBase
 from framework.decorators import trace_all_methods
 from framework.option_utils import find_option_by_delta
+from framework.entry_conditions import EntryConditionEvaluator
+from framework.exit_conditions import ExitConditionEvaluator, calculate_position_greeks
+from framework.position_manager import PositionManager, VirtualPosition
 import pytz
+import uuid
 
 # Import bot config schema
 try:
@@ -54,6 +58,27 @@ class Bot(BotBase):
         self.ib: Optional[IB] = None
         self._stop_requested = False
         self._active_trades: List[Trade] = []
+        
+        # Initialize position manager
+        db_path = self.system_config.get("database.path")
+        self.position_manager = PositionManager(db_path, self.logger)
+        
+        # Initialize entry condition evaluator if conditions are configured
+        self._entry_condition_evaluator: Optional[EntryConditionEvaluator] = None
+        if self.validated_config.entry_conditions:
+            # Convert Pydantic models to dicts for the evaluator
+            conditions_config = [cond.model_dump() for cond in self.validated_config.entry_conditions]
+            self._entry_condition_evaluator = EntryConditionEvaluator(conditions_config, self.logger)
+        
+        # Initialize exit condition evaluator if conditions are configured
+        self._exit_condition_evaluator: Optional[ExitConditionEvaluator] = None
+        if self.validated_config.exit_conditions:
+            # Convert Pydantic models to dicts for the evaluator
+            exit_conditions_config = [cond.model_dump() for cond in self.validated_config.exit_conditions]
+            self._exit_condition_evaluator = ExitConditionEvaluator(exit_conditions_config, self.logger)
+        
+        # Track current position being opened (for linking fills to positions)
+        self._pending_position_id: Optional[str] = None
         
     async def start(self) -> None:
         """
@@ -209,6 +234,15 @@ class Bot(BotBase):
                 return
             
             self.logger.info(f"Current {self.validated_config.underlying_symbol} price: {current_price:.2f}")
+            
+            # Step 2.5: Check entry conditions if configured
+            if self._entry_condition_evaluator:
+                conditions_met = await self._entry_condition_evaluator.evaluate_all(
+                    self.ib, underlying, current_price
+                )
+                if not conditions_met:
+                    self.logger.info("Entry conditions not met - skipping trade")
+                    return
             
             # Step 3: Find expiration date
             expiration = await self._find_expiration(underlying)

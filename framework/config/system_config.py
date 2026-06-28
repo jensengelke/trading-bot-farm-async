@@ -18,10 +18,16 @@ class FlexConfig(BaseModel):
     flex_query_id: str = Field(..., description="Flex query ID (string)")
 
 
+class DatabaseConfig(BaseModel):
+    """Database configuration for virtual position tracking."""
+    path: str = Field(..., description="Path to SQLite database file (relative or absolute)")
+
+
 class ConfigModel(BaseModel):
     """Pydantic model for validating merged configuration."""
     connection: ConnectionConfig
     flex: FlexConfig
+    database: DatabaseConfig
     
     class Config:
         extra = "forbid"
