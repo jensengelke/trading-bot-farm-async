@@ -16,24 +16,24 @@ import pytz
 
 # Import bot config schema
 try:
-    from bots.butterfly.config import ButterflyBotConfig, ButterflyLegConfig
+    from bots.strategy.config import StrategyBotConfig, StrategyLegConfig
 except ImportError:
     # Fallback if running from different context
-    from .config import ButterflyBotConfig, ButterflyLegConfig
+    from .config import StrategyBotConfig, StrategyLegConfig
 
 
 @trace_all_methods
 class Bot(BotBase):
     """
-    Butterfly Bot Implementation.
+    Strategy Bot Implementation.
     
-    Places configurable butterfly spreads on various underlyings at scheduled times.
+    Places configurable option spreads on various underlyings at scheduled times.
     Supports flexible leg configuration, strike selection, and bracket orders.
     """
     
     def __init__(self, bot_id: str, config: Dict[str, Any], system_config: Any, ib_connection_manager):
         """
-        Initialize the Butterfly bot.
+        Initialize the Strategy bot.
         
         Args:
             bot_id: Unique identifier for this bot instance
@@ -45,7 +45,7 @@ class Bot(BotBase):
         
         # Validate configuration using Pydantic model
         try:
-            self.validated_config = ButterflyBotConfig(**config)
+            self.validated_config = StrategyBotConfig(**config)
             self.logger.info("Configuration validated successfully")
         except Exception as e:
             self.logger.error(f"Configuration validation failed: {e}", exc_info=True)
@@ -57,11 +57,11 @@ class Bot(BotBase):
         
     async def start(self) -> None:
         """
-        Start the butterfly bot.
+        Start the strategy bot.
         
         Runs continuously, executing the trading logic at scheduled times.
         """
-        self.logger.info("Starting Butterfly bot")
+        self.logger.info("Starting Strategy bot")
         
         # Get connection parameters from system config
         host = self.system_config.get("connection.host")
@@ -250,8 +250,8 @@ class Bot(BotBase):
             
             self.logger.info(f"Final limit price: {limit_price:.2f}")
             
-            # Step 10: Place butterfly order
-            await self._place_butterfly_order(option_contracts, limit_price, min_tick)
+            # Step 10: Place strategy order
+            await self._place_strategy_order(option_contracts, limit_price, min_tick)
             
         except Exception as e:
             self.logger.error(f"Error executing trading logic: {e}", exc_info=True)
@@ -514,7 +514,7 @@ class Bot(BotBase):
             # Round to nearest 1
             return round(strike)
     
-    async def _create_option_contracts(self, expiration: str, leg_strikes: Dict[str, float]) -> Optional[List[Tuple[ButterflyLegConfig, Contract]]]:
+    async def _create_option_contracts(self, expiration: str, leg_strikes: Dict[str, float]) -> Optional[List[Tuple[StrategyLegConfig, Contract]]]:
         """
         Create and qualify option contracts for all legs.
         
@@ -554,7 +554,7 @@ class Bot(BotBase):
             self.logger.error(f"Error creating option contracts: {e}", exc_info=True)
             return None
     
-    async def _monitor_mid_prices(self, option_contracts: List[Tuple[ButterflyLegConfig, Contract]]) -> Optional[float]:
+    async def _monitor_mid_prices(self, option_contracts: List[Tuple[StrategyLegConfig, Contract]]) -> Optional[float]:
         """
         Monitor mid prices for all legs and calculate mean mid price for the combo.
         
@@ -624,7 +624,7 @@ class Bot(BotBase):
             self.logger.error(f"Error monitoring mid prices: {e}", exc_info=True)
             return None
     
-    async def _get_combo_min_tick(self, option_contracts: List[Tuple[ButterflyLegConfig, Contract]]) -> Optional[float]:
+    async def _get_combo_min_tick(self, option_contracts: List[Tuple[StrategyLegConfig, Contract]]) -> Optional[float]:
         """
         Get the minTick requirement for the combo contract.
         
@@ -729,9 +729,9 @@ class Bot(BotBase):
         
         return limit_price
     
-    async def _place_butterfly_order(self, option_contracts: List[Tuple[ButterflyLegConfig, Contract]], limit_price: float, min_tick: float) -> None:
+    async def _place_strategy_order(self, option_contracts: List[Tuple[StrategyLegConfig, Contract]], limit_price: float, min_tick: float) -> None:
         """
-        Place the butterfly order and monitor for fill, adjusting price if needed.
+        Place the strategy order and monitor for fill, adjusting price if needed.
         
         Args:
             option_contracts: List of tuples (leg_config, contract)
@@ -762,9 +762,9 @@ class Bot(BotBase):
             
             # Create limit order
             order = LimitOrder("BUY", num_contracts, limit_price)
-            order.orderRef = f"{self.bot_id}_butterfly"
+            order.orderRef = f"{self.bot_id}_strategy"
             
-            self.logger.info(f"Placing butterfly order: {num_contracts} @ {limit_price:.2f}")
+            self.logger.info(f"Placing strategy order: {num_contracts} @ {limit_price:.2f}")
             
             # Place order
             trade = self.ib.placeOrder(combo, order)
@@ -825,7 +825,7 @@ class Bot(BotBase):
                 self.logger.warning(f"Order not filled - final status: {final_status}")
             
         except Exception as e:
-            self.logger.error(f"Error placing butterfly order: {e}", exc_info=True)
+            self.logger.error(f"Error placing strategy order: {e}", exc_info=True)
     
     async def _place_bracket_orders(self, combo: Contract, quantity: int, fill_price: float) -> None:
         """
@@ -861,7 +861,7 @@ class Bot(BotBase):
                     stop_price = fill_price * stoploss_factor
                 
                 stop_order = StopOrder("SELL", quantity, stop_price)
-                stop_order.orderRef = f"{self.bot_id}_butterfly_stoploss"
+                stop_order.orderRef = f"{self.bot_id}_strategy_stoploss"
                 stop_order.tif = "GTC"
                 
                 self.logger.info(f"Placing stop loss order: SELL {quantity} @ STP {stop_price:.2f}")
@@ -880,7 +880,7 @@ class Bot(BotBase):
                     profit_price = fill_price * (1 + takeprofit_factor)
                 
                 profit_order = LimitOrder("SELL", quantity, profit_price)
-                profit_order.orderRef = f"{self.bot_id}_butterfly_takeprofit"
+                profit_order.orderRef = f"{self.bot_id}_strategy_takeprofit"
                 profit_order.tif = "GTC"
                 
                 self.logger.info(f"Placing take profit order: SELL {quantity} @ LMT {profit_price:.2f}")
@@ -892,9 +892,9 @@ class Bot(BotBase):
     
     async def stop(self) -> None:
         """
-        Stop the butterfly bot.
+        Stop the strategy bot.
         """
-        self.logger.info("Stopping Butterfly bot")
+        self.logger.info("Stopping Strategy bot")
         self._stop_requested = True
         
         # Cancel any active orders
@@ -910,4 +910,4 @@ class Bot(BotBase):
         # Don't disconnect - the shared connection is managed by the framework
         self.ib = None
         
-        self.logger.info("Butterfly bot stopped")
+        self.logger.info("Strategy bot stopped")

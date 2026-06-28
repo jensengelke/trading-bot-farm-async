@@ -1,7 +1,7 @@
-# Butterfly Bot Configuration - 0 DTE SPX Short Call Butterfly
-# This is an example configuration for the butterfly bot
+# Strategy Bot Configuration - 0 DTE SPX Short Call Butterfly
+# This is an example configuration for the strategy bot
 
-type: butterfly
+type: strategy
 
 # Underlying: SPX Index
 underlying_type: Index
@@ -28,7 +28,7 @@ entry_times:
   - "14:30"
 timezone: America/New_York
 
-# Butterfly Structure: Balanced short call butterfly
+# Strategy Structure: Balanced short call butterfly
 # Sell 2 calls at-the-money, buy 1 call 25 points above and below
 legs:
   - name: center

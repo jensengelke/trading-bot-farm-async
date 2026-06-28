@@ -1,16 +1,16 @@
 """
-Butterfly Bot Configuration Schema
+Strategy Bot Configuration Schema
 
-Defines the Pydantic model for validating butterfly bot configuration.
+Defines the Pydantic model for validating strategy bot configuration.
 """
 
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Literal
 
 
-class ButterflyLegConfig(BaseModel):
+class StrategyLegConfig(BaseModel):
     """
-    Configuration for a single leg of the butterfly spread.
+    Configuration for a single leg of the option spread.
     """
     
     name: str = Field(..., description="Name of the leg for logging and reference")
@@ -74,15 +74,15 @@ class ButterflyLegConfig(BaseModel):
         return v
 
 
-class ButterflyBotConfig(BaseModel):
+class StrategyBotConfig(BaseModel):
     """
-    Configuration schema for the Butterfly bot.
+    Configuration schema for the Strategy bot.
     
-    The Butterfly bot places configurable butterfly spreads on various underlyings
+    The Strategy bot places configurable option spreads on various underlyings
     at scheduled times.
     """
     
-    type: str = Field(..., description="Bot type identifier (must be 'butterfly')")
+    type: str = Field(..., description="Bot type identifier (must be 'strategy')")
     
     # Underlying configuration
     underlying_type: Literal["Index", "Stock"] = Field(
@@ -132,10 +132,10 @@ class ButterflyBotConfig(BaseModel):
     )
     
     # Leg configuration
-    legs: List[ButterflyLegConfig] = Field(
+    legs: List[StrategyLegConfig] = Field(
         ...,
         min_length=2,
-        description="List of legs that make up the butterfly spread"
+        description="List of legs that make up the option spread"
     )
     
     # Position sizing
@@ -143,7 +143,7 @@ class ButterflyBotConfig(BaseModel):
         default=1,
         ge=1,
         le=100,
-        description="Number of butterfly spreads to trade (1-100)"
+        description="Number of option spreads to trade (1-100)"
     )
     
     # Pricing configuration
@@ -187,9 +187,9 @@ class ButterflyBotConfig(BaseModel):
     @field_validator('type')
     @classmethod
     def validate_type(cls, v: str) -> str:
-        """Validate that type is 'butterfly'."""
-        if v != 'butterfly':
-            raise ValueError(f"Bot type must be 'butterfly', got '{v}'")
+        """Validate that type is 'strategy'."""
+        if v != 'strategy':
+            raise ValueError(f"Bot type must be 'strategy', got '{v}'")
         return v
     
     @field_validator('entry_times')
@@ -215,7 +215,7 @@ class ButterflyBotConfig(BaseModel):
     
     @field_validator('legs')
     @classmethod
-    def validate_legs(cls, v: List[ButterflyLegConfig]) -> List[ButterflyLegConfig]:
+    def validate_legs(cls, v: List[StrategyLegConfig]) -> List[StrategyLegConfig]:
         """Validate leg configuration consistency."""
         # Check that all leg names are unique
         names = [leg.name for leg in v]

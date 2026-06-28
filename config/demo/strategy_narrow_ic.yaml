@@ -1,7 +1,7 @@
-# Butterfly Bot Configuration - Delta-Based Strike Selection Example
-# This example demonstrates using delta-based strike selection for butterfly legs
+# Strategy Bot Configuration - Delta-Based Strike Selection Example
+# This example demonstrates using delta-based strike selection for option spread legs
 
-type: butterfly
+type: strategy
 
 # Underlying: SPX Index
 underlying_type: Index
