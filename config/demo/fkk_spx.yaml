@@ -1,0 +1,37 @@
+# FKK Bot Configuration
+# This bot runs once per day at a configurable time and places a 0 DTE bull put spread on SPX
+# if market conditions are met.
+
+type: fkk
+
+# Execution time in HH:MM format (24-hour)
+# Default: 14:13 (2:13 PM)
+execution_time: "14:13"
+
+# Timezone for execution time
+# Default: America/New_York (Eastern Time)
+timezone: "America/New_York"
+
+# Timeout for monitoring entry conditions (in minutes)
+# The bot will check conditions repeatedly for this duration
+# Default: 5 minutes
+condition_timeout_minutes: 5
+
+# Number of contracts to trade
+# Default: 1
+num_contracts: 1
+
+# Width of the spread (in strike points)
+# The long put will be this many points below the short put
+# Default: 10
+spread_width: 10
+
+# Maximum number of price adjustments if order is not filled
+# After each 30-second period without fill, the limit price is reduced by $0.05
+# Default: 4 (total of 2 minutes of attempts)
+max_price_adjustments: 4
+
+# Target delta for the short put option
+# The bot will select the strike with delta closest to this value
+# Default: 0.35 (approximately 35% probability of being ITM at expiration)
+target_delta: 0.35

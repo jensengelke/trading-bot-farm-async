@@ -229,19 +229,28 @@ class Bot(BotBase):
                 self.logger.error("Failed to create option contracts")
                 return
             
-            # Step 6: Monitor mid prices
+            # Step 6: Get minTick for combo contract
+            min_tick = await self._get_combo_min_tick(option_contracts)
+            if min_tick is None:
+                self.logger.error("Failed to get combo minTick")
+                return
+            
+            # Step 7: Monitor mid prices
             limit_price = await self._monitor_mid_prices(option_contracts)
             if limit_price is None:
                 self.logger.error("Failed to determine limit price")
                 return
             
-            # Step 7: Apply min/max premium constraints
+            # Step 8: Apply min/max premium constraints
             limit_price = self._apply_premium_constraints(limit_price)
+            
+            # Step 9: Round to minTick
+            limit_price = self._round_to_min_tick(limit_price, min_tick)
             
             self.logger.info(f"Final limit price: {limit_price:.2f}")
             
-            # Step 8: Place butterfly order
-            await self._place_butterfly_order(option_contracts, limit_price)
+            # Step 10: Place butterfly order
+            await self._place_butterfly_order(option_contracts, limit_price, min_tick)
             
         except Exception as e:
             self.logger.error(f"Error executing trading logic: {e}", exc_info=True)
@@ -535,9 +544,12 @@ class Bot(BotBase):
                         valid = False
                         break
                 
-                if valid:
+                # Only include valid prices that are non-negative
+                if valid and combo_mid >= 0:
                     combo_mid_prices.append(combo_mid)
                     self.logger.debug(f"Combo mid price: {combo_mid:.2f}")
+                elif valid:
+                    self.logger.debug(f"Skipping negative combo mid price: {combo_mid:.2f}")
                 
                 await asyncio.sleep(1)  # Sample every second
             
@@ -558,6 +570,86 @@ class Bot(BotBase):
         except Exception as e:
             self.logger.error(f"Error monitoring mid prices: {e}", exc_info=True)
             return None
+    
+    async def _get_combo_min_tick(self, option_contracts: List[Tuple[ButterflyLegConfig, Contract]]) -> Optional[float]:
+        """
+        Get the minTick requirement for the combo contract.
+        
+        Args:
+            option_contracts: List of tuples (leg_config, contract)
+            
+        Returns:
+            minTick value, or None if error
+        """
+        assert self.ib is not None, "IB connection is not initialized"
+        
+        try:
+            # Create combo contract
+            combo = Contract()
+            combo.symbol = self.validated_config.underlying_symbol
+            combo.secType = "BAG"
+            combo.currency = "USD"
+            combo.exchange = "SMART"
+            
+            combo.comboLegs = []
+            for leg_config, contract in option_contracts:
+                leg = ComboLeg()
+                leg.conId = contract.conId
+                leg.ratio = abs(leg_config.ratio)
+                leg.action = "SELL" if leg_config.ratio < 0 else "BUY"
+                leg.exchange = "SMART"
+                combo.comboLegs.append(leg)
+            
+            # Request contract details
+            details_list = await self.ib.reqContractDetailsAsync(combo)
+            
+            if not details_list:
+                self.logger.error("Failed to get contract details for combo")
+                return None
+            
+            # Get minTick from first contract details
+            min_tick = details_list[0].minTick
+            self.logger.info(f"Combo minTick: {min_tick}")
+            
+            return min_tick
+            
+        except Exception as e:
+            self.logger.error(f"Error getting combo minTick: {e}", exc_info=True)
+            return None
+    
+    def _round_to_min_tick(self, price: float, min_tick: float) -> float:
+        """
+        Round price to nearest valid minTick increment.
+        
+        Args:
+            price: Raw price
+            min_tick: Minimum tick size
+            
+        Returns:
+            Rounded price
+        """
+        if min_tick <= 0:
+            return price
+        
+        # Round to nearest minTick
+        rounded = round(price / min_tick) * min_tick
+        
+        # Round to avoid floating point precision issues
+        # Determine decimal places based on minTick
+        if min_tick >= 1:
+            decimal_places = 0
+        elif min_tick >= 0.1:
+            decimal_places = 1
+        elif min_tick >= 0.01:
+            decimal_places = 2
+        else:
+            decimal_places = 3
+        
+        rounded = round(rounded, decimal_places)
+        
+        self.logger.debug(f"Rounded price {price:.4f} to {rounded:.4f} (minTick={min_tick})")
+        
+        return rounded
     
     def _apply_premium_constraints(self, limit_price: float) -> float:
         """
@@ -584,13 +676,14 @@ class Bot(BotBase):
         
         return limit_price
     
-    async def _place_butterfly_order(self, option_contracts: List[Tuple[ButterflyLegConfig, Contract]], limit_price: float) -> None:
+    async def _place_butterfly_order(self, option_contracts: List[Tuple[ButterflyLegConfig, Contract]], limit_price: float, min_tick: float) -> None:
         """
         Place the butterfly order and monitor for fill, adjusting price if needed.
         
         Args:
             option_contracts: List of tuples (leg_config, contract)
             limit_price: Initial limit price
+            min_tick: Minimum tick size for the combo
         """
         assert self.ib is not None, "IB connection is not initialized"
         
@@ -627,6 +720,7 @@ class Bot(BotBase):
             # Monitor for fill with price adjustments
             adjustments_made = 0
             current_limit = limit_price
+            initial_limit = limit_price  # Store initial limit for calculating adjustments
             
             while adjustments_made <= max_adjustments:
                 # Wait 30 seconds for fill
@@ -636,20 +730,24 @@ class Bot(BotBase):
                 if trade.orderStatus.status in ["Filled", "Cancelled"]:
                     break
                 
-                # If not filled and we can still adjust, adjust price by 0.05
+                # If not filled and we can still adjust, adjust price by minTick
                 if adjustments_made < max_adjustments:
+                    adjustments_made += 1
+                    
+                    # Calculate new price based on initial limit, not current limit
                     # Determine adjustment direction based on whether this is a credit or debit
-                    if limit_price < 0:
+                    if initial_limit < 0:
                         # Credit spread - reduce credit (move toward zero)
-                        current_limit += 0.05
+                        current_limit = initial_limit - (min_tick * adjustments_made)
                     else:
-                        # Debit spread - reduce debit (move toward zero)
-                        current_limit -= 0.05
+                        # Debit spread - increase debit (willing to pay more to get filled)
+                        current_limit = initial_limit + (min_tick * adjustments_made)
                     
                     # Apply premium constraints
                     current_limit = self._apply_premium_constraints(current_limit)
                     
-                    adjustments_made += 1
+                    # Round to minTick to ensure valid price
+                    current_limit = self._round_to_min_tick(current_limit, min_tick)
                     
                     self.logger.info(f"Order not filled - adjusting price to {current_limit:.2f} (adjustment {adjustments_made}/{max_adjustments})")
                     

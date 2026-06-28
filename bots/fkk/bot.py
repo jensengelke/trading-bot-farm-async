@@ -491,8 +491,15 @@ class Bot(BotBase):
             
             self.logger.info(f"Finding 0 DTE options for SPX at {current_price:.2f}")
             
-            # Get option chains
-            chains = await self.ib.reqSecDefOptParamsAsync("SPX", "", "IND", 0)
+            # Get option chains with timeout
+            try:
+                chains = await asyncio.wait_for(
+                    self.ib.reqSecDefOptParamsAsync("SPX", "", "IND", 0),
+                    timeout=30  # 30 second timeout
+                )
+            except asyncio.TimeoutError:
+                self.logger.error("Timeout getting option chains from IB (30 seconds exceeded)")
+                return None, None
             
             if not chains:
                 self.logger.error("No option chains found for SPX")
@@ -540,9 +547,19 @@ class Bot(BotBase):
             short_put = Option("SPX", today, short_strike, "P", "SMART", currency="USD")
             long_put = Option("SPX", today, long_strike, "P", "SMART", currency="USD")
             
-            # Qualify contracts
-            short_put = (await self.ib.qualifyContractsAsync(short_put))[0]
-            long_put = (await self.ib.qualifyContractsAsync(long_put))[0]
+            # Qualify contracts with timeout
+            try:
+                short_put = (await asyncio.wait_for(
+                    self.ib.qualifyContractsAsync(short_put),
+                    timeout=10
+                ))[0]
+                long_put = (await asyncio.wait_for(
+                    self.ib.qualifyContractsAsync(long_put),
+                    timeout=10
+                ))[0]
+            except asyncio.TimeoutError:
+                self.logger.error("Timeout qualifying option contracts")
+                return None, None
             
             if not short_put or not isinstance(short_put, Contract):
                 self.logger.error("Failed to qualify short put contract")
@@ -605,7 +622,14 @@ class Bot(BotBase):
                 contracts_to_qualify = [opt for _, opt in option_contracts]
                 
                 try:
-                    qualified_contracts = await self.ib.qualifyContractsAsync(*contracts_to_qualify)
+                    qualified_contracts = await asyncio.wait_for(
+                        self.ib.qualifyContractsAsync(*contracts_to_qualify),
+                        timeout=15  # 15 seconds for batch qualification
+                    )
+                except asyncio.TimeoutError:
+                    self.logger.error(f"Timeout qualifying option contracts in batch")
+                    offset += batch_size
+                    continue
                 except Exception as e:
                     self.logger.error(f"Error qualifying option contracts in batch: {e}", exc_info=True)
                     offset += batch_size
