@@ -19,14 +19,21 @@ class ButterflyLegConfig(BaseModel):
     
     ratio: int = Field(..., description="Number of contracts (positive for buy, negative for sell)")
     
-    strike_selection: Literal["underlying_offset", "leg_offset"] = Field(
+    strike_selection: Literal["underlying_offset", "leg_offset", "delta"] = Field(
         ...,
-        description="How to select strike: 'underlying_offset' (relative to underlying price) or 'leg_offset' (relative to another leg)"
+        description="How to select strike: 'underlying_offset' (relative to underlying price), 'leg_offset' (relative to another leg), or 'delta' (by option delta)"
     )
     
-    strike_offset: float = Field(
-        ...,
-        description="Offset in points for strike selection (can be positive or negative)"
+    strike_offset: Optional[float] = Field(
+        default=None,
+        description="Offset in points for strike selection (required for 'underlying_offset' and 'leg_offset')"
+    )
+    
+    strike_selection_delta: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Target delta for strike selection (required for 'delta' selection, between 0 and 1)"
     )
     
     strike_selection_parent: Optional[str] = Field(
@@ -40,8 +47,30 @@ class ButterflyLegConfig(BaseModel):
         """Validate that parent is specified when using leg_offset."""
         if info.data.get('strike_selection') == 'leg_offset' and not v:
             raise ValueError("strike_selection_parent is required when strike_selection is 'leg_offset'")
-        if info.data.get('strike_selection') == 'underlying_offset' and v:
-            raise ValueError("strike_selection_parent should not be specified when strike_selection is 'underlying_offset'")
+        if info.data.get('strike_selection') in ['underlying_offset', 'delta'] and v:
+            raise ValueError(f"strike_selection_parent should not be specified when strike_selection is '{info.data.get('strike_selection')}'")
+        return v
+    
+    @field_validator('strike_offset')
+    @classmethod
+    def validate_strike_offset(cls, v: Optional[float], info) -> Optional[float]:
+        """Validate that strike_offset is specified when required."""
+        strike_selection = info.data.get('strike_selection')
+        if strike_selection in ['underlying_offset', 'leg_offset'] and v is None:
+            raise ValueError(f"strike_offset is required when strike_selection is '{strike_selection}'")
+        if strike_selection == 'delta' and v is not None:
+            raise ValueError("strike_offset should not be specified when strike_selection is 'delta'")
+        return v
+    
+    @field_validator('strike_selection_delta')
+    @classmethod
+    def validate_strike_selection_delta(cls, v: Optional[float], info) -> Optional[float]:
+        """Validate that strike_selection_delta is specified when using delta selection."""
+        strike_selection = info.data.get('strike_selection')
+        if strike_selection == 'delta' and v is None:
+            raise ValueError("strike_selection_delta is required when strike_selection is 'delta'")
+        if strike_selection in ['underlying_offset', 'leg_offset'] and v is not None:
+            raise ValueError(f"strike_selection_delta should not be specified when strike_selection is '{strike_selection}'")
         return v
 
 
@@ -200,11 +229,7 @@ class ButterflyBotConfig(BaseModel):
                     raise ValueError(f"Parent leg '{leg.strike_selection_parent}' not found for leg '{leg.name}'")
                 if leg.strike_selection_parent == leg.name:
                     raise ValueError(f"Leg '{leg.name}' cannot reference itself as parent")
-        
-        # Check that all legs have the same right (all calls or all puts)
-        rights = [leg.right for leg in v]
-        if len(set(rights)) > 1:
-            raise ValueError("All legs must have the same right (all 'call' or all 'put')")
+
         
         return v
     

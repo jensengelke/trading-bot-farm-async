@@ -11,6 +11,7 @@ from ib_async import IB, Index, Stock, Option, Contract, Order, Trade, ComboLeg
 from ib_async.order import LimitOrder, StopOrder
 from framework.bot_base import BotBase
 from framework.decorators import trace_all_methods
+from framework.option_utils import find_option_by_delta
 import pytz
 
 # Import bot config schema
@@ -409,10 +410,23 @@ class Bot(BotBase):
         Returns:
             Dictionary mapping leg name to strike price, or None if error
         """
+        assert self.ib is not None, "IB connection is not initialized"
+        
         try:
             leg_strikes = {}
+            symbol = self.validated_config.underlying_symbol
+            underlying_type = self.validated_config.underlying_type
             
-            # First pass: determine strikes for legs with underlying_offset
+            # Get option chains for delta-based selection
+            chains = None
+            if any(leg.strike_selection == "delta" for leg in self.validated_config.legs):
+                sec_type = "IND" if underlying_type == "Index" else "STK"
+                chains = await self.ib.reqSecDefOptParamsAsync(symbol, "", sec_type, underlying.conId)
+                if not chains:
+                    self.logger.error(f"No option chains found for {symbol}")
+                    return None
+            
+            # First pass: determine strikes for legs with underlying_offset and delta
             for leg_config in self.validated_config.legs:
                 if leg_config.strike_selection == "underlying_offset":
                     strike = current_price + leg_config.strike_offset
@@ -420,6 +434,45 @@ class Bot(BotBase):
                     strike = self._round_to_valid_strike(strike)
                     leg_strikes[leg_config.name] = strike
                     self.logger.info(f"Leg '{leg_config.name}': strike={strike:.2f} (underlying_offset={leg_config.strike_offset})")
+                
+                elif leg_config.strike_selection == "delta":
+                    # Find strike by delta
+                    target_delta = leg_config.strike_selection_delta
+                    right = "C" if leg_config.right == "call" else "P"
+                    
+                    # Get available strikes from chains
+                    available_strikes = set()
+                    for chain in chains:
+                        if expiration in chain.expirations:
+                            available_strikes.update(chain.strikes)
+                    
+                    if not available_strikes:
+                        self.logger.error(f"No strikes available for expiration {expiration}")
+                        return None
+                    
+                    # Sort strikes appropriately based on option type
+                    if right == "P":
+                        # For puts, search strikes below current price (descending order)
+                        strikes = sorted([s for s in available_strikes if s < current_price], reverse=True)
+                    else:
+                        # For calls, search strikes above current price (ascending order)
+                        strikes = sorted([s for s in available_strikes if s > current_price])
+                    
+                    if not strikes:
+                        self.logger.error(f"No suitable strikes found for {right} options")
+                        return None
+                    
+                    # Use shared utility function to find strike by delta
+                    strike = await find_option_by_delta(
+                        self.ib, self.logger, strikes, symbol, expiration, right, target_delta
+                    )
+                    
+                    if not strike:
+                        self.logger.error(f"Could not find strike with delta ~{target_delta} for leg '{leg_config.name}'")
+                        return None
+                    
+                    leg_strikes[leg_config.name] = strike
+                    self.logger.info(f"Leg '{leg_config.name}': strike={strike:.2f} (delta={target_delta})")
             
             # Second pass: determine strikes for legs with leg_offset
             for leg_config in self.validated_config.legs:

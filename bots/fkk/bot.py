@@ -11,6 +11,7 @@ from ib_async import IB, Index, Option, Contract, Order, Trade
 from ib_async.order import LimitOrder
 from framework.bot_base import BotBase
 from framework.decorators import trace_all_methods
+from framework.option_utils import find_option_by_delta
 import pytz
 
 # Import bot config schema
@@ -527,8 +528,11 @@ class Bot(BotBase):
                 self.logger.error("Not enough strikes available")
                 return None, None
             
-            # Find short put with delta closest to 0.35
-            short_strike = await self._find_strike_by_delta(strikes, today, current_price, target_delta=0.35)
+            # Find short put with delta closest to configured target
+            target_delta = self.validated_config.target_delta
+            short_strike = await find_option_by_delta(
+                self.ib, self.logger, strikes, "SPX", today, "P", target_delta
+            )
             
             if not short_strike:
                 self.logger.error("Could not find short strike with delta ~0.35")
@@ -574,133 +578,6 @@ class Bot(BotBase):
         except Exception as e:
             self.logger.error(f"Error finding spread legs: {e}", exc_info=True)
             return None, None
-    
-    async def _find_strike_by_delta(self, strikes: List[float], expiration: str, current_price: float, target_delta: float) -> Optional[float]:
-        """
-        Find the strike with delta closest to target using actual option greeks from IB.
-        
-        Processes strikes in batches of 20, stopping early if a delta smaller than target is found.
-        This ensures we find the optimal strike even if it's beyond the first 20 strikes.
-        
-        Args:
-            strikes: List of available strikes (sorted descending, below current price)
-            expiration: Option expiration date (format: YYYYMMDD)
-            current_price: Current underlying price
-            target_delta: Target delta value (e.g., 0.35 for puts, which have negative delta)
-            
-        Returns:
-            Strike with delta closest to target, or None if not found
-        """
-        assert self.ib is not None, "IB connection is not initialized"
-        
-        try:
-            self.logger.info(f"Finding strike with delta closest to {target_delta} (target absolute value)")
-            
-            best_strike = None
-            best_delta = None
-            best_diff = float('inf')
-            
-            batch_size = 20
-            offset = 0
-            
-            # Process strikes in batches until we find a delta smaller than target or run out of strikes
-            while offset < len(strikes):
-                batch_strikes = strikes[offset:offset + batch_size]
-                
-                if not batch_strikes:
-                    break
-                
-                self.logger.debug(f"Processing batch: strikes {offset} to {offset + len(batch_strikes) - 1}")
-                
-                # Create option contracts for this batch
-                option_contracts = []
-                for strike in batch_strikes:
-                    option = Option("SPX", expiration, strike, "P", "SMART", currency="USD")
-                    option_contracts.append((strike, option))
-                
-                # Qualify all contracts in batch
-                contracts_to_qualify = [opt for _, opt in option_contracts]
-                
-                try:
-                    qualified_contracts = await asyncio.wait_for(
-                        self.ib.qualifyContractsAsync(*contracts_to_qualify),
-                        timeout=15  # 15 seconds for batch qualification
-                    )
-                except asyncio.TimeoutError:
-                    self.logger.error(f"Timeout qualifying option contracts in batch")
-                    offset += batch_size
-                    continue
-                except Exception as e:
-                    self.logger.error(f"Error qualifying option contracts in batch: {e}", exc_info=True)
-                    offset += batch_size
-                    continue
-                
-                # Request market data with greeks for each option
-                tickers = []
-                for i, qualified_contract in enumerate(qualified_contracts):
-                    if qualified_contract and isinstance(qualified_contract, Contract):
-                        # Request market data with greeks (genericTickList "106" requests option greeks)
-                        ticker = self.ib.reqMktData(qualified_contract, "106", False, False)
-                        tickers.append((batch_strikes[i], ticker))
-                    else:
-                        self.logger.warning(f"Failed to qualify contract for strike {batch_strikes[i]}")
-                
-                # Wait for market data to populate
-                await asyncio.sleep(3)
-                
-                # Track if we should stop (found delta smaller than target)
-                should_stop = False
-                
-                # Find the strike with delta closest to target in this batch
-                for strike, ticker in tickers:
-                    # Check if we have model greeks and delta is a valid number
-                    if (ticker.modelGreeks and 
-                        ticker.modelGreeks.delta is not None and 
-                        isinstance(ticker.modelGreeks.delta, (int, float))):
-                        
-                        delta = ticker.modelGreeks.delta
-                        
-                        # For puts, delta is negative. We want absolute value for comparison
-                        abs_delta = abs(delta)
-                        diff = abs(abs_delta - target_delta)
-                        
-                        self.logger.debug(f"Strike {strike}: delta={delta:.4f}, abs_delta={abs_delta:.4f}, diff={diff:.4f}")
-                        
-                        # Update best if this is closer
-                        if diff < best_diff:
-                            best_diff = diff
-                            best_strike = strike
-                            best_delta = delta
-                        
-                        # Stop if we found a delta smaller than target (we've gone too far OTM)
-                        if abs_delta < target_delta:
-                            self.logger.info(f"Found delta {abs_delta:.4f} < target {target_delta:.4f} at strike {strike}, stopping search")
-                            should_stop = True
-                            break
-                    else:
-                        self.logger.debug(f"Strike {strike}: No greeks available")
-                
-                # Cancel all market data subscriptions for this batch
-                for _, ticker in tickers:
-                    self.ib.cancelMktData(ticker.contract)
-                
-                # Stop if we found a delta smaller than target
-                if should_stop:
-                    break
-                
-                # Move to next batch
-                offset += batch_size
-            
-            if best_strike is not None:
-                self.logger.info(f"Selected strike {best_strike} with delta={best_delta:.4f} (abs={abs(best_delta):.4f}, target={target_delta:.4f}, diff={best_diff:.4f})")
-                return best_strike
-            else:
-                self.logger.error("No suitable strike found with valid greeks")
-                return None
-            
-        except Exception as e:
-            self.logger.error(f"Error finding strike by delta: {e}", exc_info=True)
-            return None
     
     async def _place_spread_order(self, short_put: Contract, long_put: Contract, quantity: int, limit_price: float, max_adjustments: int) -> None:
         """
