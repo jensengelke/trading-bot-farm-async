@@ -127,40 +127,6 @@ class ExitConditionConfig(BaseModel):
         ...,
         description="Threshold value for the condition"
     )
-    
-    @field_validator('period')
-    @classmethod
-    def validate_period(cls, v: Optional[int], info) -> Optional[int]:
-        """Validate that period is specified for SMA type."""
-        if info.data.get('type') == 'SMA' and v is None:
-            raise ValueError("period is required for SMA condition type")
-        if info.data.get('type') != 'SMA' and v is not None:
-            raise ValueError("period should only be specified for SMA condition type")
-        return v
-    
-    @field_validator('threshold')
-    @classmethod
-    def validate_threshold(cls, v: Optional[float], info) -> Optional[float]:
-        """Validate that threshold is specified for intraday move type."""
-        if info.data.get('type') == 'underlying_intraday_move' and v is None:
-            raise ValueError("threshold is required for underlying_intraday_move condition type")
-        if info.data.get('type') != 'underlying_intraday_move' and v is not None:
-            raise ValueError("threshold should only be specified for underlying_intraday_move condition type")
-        return v
-    
-    @field_validator('operator')
-    @classmethod
-    def validate_operator(cls, v: Optional[str], info) -> Optional[str]:
-        """Validate that operator is specified."""
-        if v is None:
-            raise ValueError("operator is required for all condition types")
-        
-        # For SMA, allow all operators
-        # For intraday move, only allow >, >=, <, <=
-        if info.data.get('type') == 'underlying_intraday_move' and v == '==':
-            raise ValueError("operator '==' is not supported for underlying_intraday_move (use >, >=, <, <=)")
-        
-        return v
 
 
 class StrategyBotConfig(BaseModel):
