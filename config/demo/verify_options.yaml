@@ -1,13 +1,6 @@
 type: verify
 security_type: option
 symbols:
-  - ticker: SPX
-    exchange: CBOE
-    currency: USD
-    # Options-specific parameters
-    # right: C for calls, P for puts (will fetch both if not specified)
-    # strike: will use ATM if not specified
-    # expiration: will use closest future expiration if not specified
   - ticker: TSLA
     exchange: SMART
     currency: USD

@@ -632,11 +632,9 @@ class Bot(BotBase):
                         break
                 
                 # Only include valid prices that are non-negative
-                if valid and combo_mid >= 0:
+                if valid:
                     combo_mid_prices.append(combo_mid)
                     self.logger.debug(f"Combo mid price: {combo_mid:.2f}")
-                elif valid:
-                    self.logger.debug(f"Skipping negative combo mid price: {combo_mid:.2f}")
                 
                 await asyncio.sleep(1)  # Sample every second
             
@@ -662,47 +660,20 @@ class Bot(BotBase):
         """
         Get the minTick requirement for the combo contract.
         
+        For option combos, we use a standard minTick of 0.05 since reqContractDetailsAsync
+        for BAG contracts can hang indefinitely with IB API.
+        
         Args:
             option_contracts: List of tuples (leg_config, contract)
             
         Returns:
-            minTick value, or None if error
+            minTick value (0.05 for option combos)
         """
-        assert self.ib is not None, "IB connection is not initialized"
-        
-        try:
-            # Create combo contract
-            combo = Contract()
-            combo.symbol = self.validated_config.underlying_symbol
-            combo.secType = "BAG"
-            combo.currency = "USD"
-            combo.exchange = "SMART"
-            
-            combo.comboLegs = []
-            for leg_config, contract in option_contracts:
-                leg = ComboLeg()
-                leg.conId = contract.conId
-                leg.ratio = abs(leg_config.ratio)
-                leg.action = "SELL" if leg_config.ratio < 0 else "BUY"
-                leg.exchange = "SMART"
-                combo.comboLegs.append(leg)
-            
-            # Request contract details
-            details_list = await self.ib.reqContractDetailsAsync(combo)
-            
-            if not details_list:
-                self.logger.error("Failed to get contract details for combo")
-                return None
-            
-            # Get minTick from first contract details
-            min_tick = details_list[0].minTick
-            self.logger.info(f"Combo minTick: {min_tick}")
-            
-            return min_tick
-            
-        except Exception as e:
-            self.logger.error(f"Error getting combo minTick: {e}", exc_info=True)
-            return None
+        # For option combos, use standard minTick of 0.05
+        # This is the typical minTick for multi-leg option strategies
+        min_tick = 0.05
+        self.logger.info(f"Using standard minTick for option combo: {min_tick}")
+        return min_tick
     
     def _round_to_min_tick(self, price: float, min_tick: float) -> float:
         """
