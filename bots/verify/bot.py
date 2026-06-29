@@ -219,6 +219,8 @@ class Bot(BotBase):
             print(f"[{self.bot_id}] {msg}")
             self.logger.warning(msg)
             return
+        else:
+            print(f"[{self.bot_id}] {len(symbols)} symbols configured for verification")
         
         # Get shared IB connection
         self.logger.info("Getting shared IB connection")
