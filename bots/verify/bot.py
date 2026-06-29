@@ -178,8 +178,6 @@ class Bot(BotBase):
                 )
             )
             
-            #print(f"Found contracts: {contracts}")
-
             expiration = getattr(closest_contract.contract, 'lastTradeDateOrContractMonth', None) or ""
                         
             if not expiration:
@@ -206,7 +204,6 @@ class Bot(BotBase):
         Connects to IB, retrieves historical data for configured symbols,
         and prints the last 15 bars for each symbol.
         """
-        print(f"[{self.bot_id}] Starting verify bot")
         self.logger.info("Starting verify bot")
         
         # Get connection parameters from system config
@@ -224,7 +221,6 @@ class Bot(BotBase):
             return
         
         # Get shared IB connection
-        print(f"[{self.bot_id}] Getting shared IB connection")
         self.logger.info("Getting shared IB connection")
         
         try:
@@ -268,10 +264,10 @@ class Bot(BotBase):
                     useRTH=True
                 )
                 
-                # Print last 15 bars
-                print(f"[{self.bot_id}] Last 15 bars for {ticker}:")
+                # Print last bars
+                print(f"[{self.bot_id}] Last bars for {ticker}:")
                 self.logger.info(f"Retrieved {len(bars)} bars for {ticker}")
-                for bar in bars[-15:]:
+                for bar in bars[-1:]:
                     print(
                         f"  {bar.date}  "
                         f"O={bar.open}  "
