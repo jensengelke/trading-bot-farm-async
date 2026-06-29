@@ -2,3 +2,6 @@ connection:
   host: "127.0.0.1"
   port: 7496 
   client_id: 1
+
+database:
+  path: "data/live_positions.db"
