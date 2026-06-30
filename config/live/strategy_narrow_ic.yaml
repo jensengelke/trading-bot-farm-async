@@ -1,0 +1,63 @@
+# Strategy Bot Configuration - Delta-Based Strike Selection Example
+# This example demonstrates using delta-based strike selection for option spread legs
+
+type: strategy
+
+# Underlying: SPX Index
+underlying_type: Index
+underlying_symbol: SPX
+underlying_exchange: CBOE
+
+# Expiration: 0 DTE (same day expiration)
+dte: 14
+use_exact_dte: false  # Allow closest expiration if exact not available
+
+# Schedule: Trade on specific days and times
+entry_days:
+  - Monday
+  - Tuesday
+  - Wednesday
+  - Thursday
+  - Friday
+entry_times:
+  - "13:40"
+timezone: America/New_York
+
+legs:
+  - name: short_put
+    right: put
+    ratio: -1
+    strike_selection: delta
+    strike_selection_delta: 0.25
+
+  - name: long_put
+    right: put
+    ratio: 1
+    strike_selection: leg_offset
+    strike_selection_parent: short_put
+    strike_offset: -10  # 10 points below the short put
+  
+  - name: short_call
+    right: call
+    ratio: -1
+    strike_selection: delta
+    strike_selection_delta: 0.65 # ITM
+  
+  - name: long_call
+    right: call
+    ratio: 1
+    strike_selection: leg_offset
+    strike_selection_parent: short_call
+    strike_offset: 5  # 5 points above the short call
+
+# Position Sizing
+num_contracts: 1
+
+# Pricing
+mid_price_monitoring_period: 10  # Monitor for 10 seconds
+min_premium: 5.20  # Minimum debit of $0.50
+#max_premium: 2.00  # no max premium for this strategy
+max_price_adjustments: 0
+
+# Bracket Orders
+takeprofit_factor: 1.2  # Take profit at 150% of initial debit

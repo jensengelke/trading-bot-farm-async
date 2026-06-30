@@ -54,6 +54,7 @@ async def find_option_by_delta(
         best_strike = None
         best_delta = None
         best_diff = float('inf')
+        best_strike_index = None
         
         offset = 0
         
@@ -106,7 +107,7 @@ async def find_option_by_delta(
             should_stop = False
             
             # Find the strike with delta closest to target in this batch
-            for strike, ticker in tickers:
+            for i, (strike, ticker) in enumerate(tickers):
                 # Check if we have model greeks and delta is a valid number
                 if (ticker.modelGreeks and 
                     ticker.modelGreeks.delta is not None and 
@@ -125,6 +126,7 @@ async def find_option_by_delta(
                         best_diff = diff
                         best_strike = strike
                         best_delta = delta
+                        best_strike_index = offset + i
                     
                     # Stop if we found a delta smaller than target (we've gone too far OTM)
                     if abs_delta < target_delta:
@@ -144,6 +146,78 @@ async def find_option_by_delta(
             
             # Move to next batch
             offset += batch_size
+        
+        # Check if the best strike is the first element - this might indicate we need to search the other direction
+        if best_strike is not None and best_strike_index == 0 and len(strikes) > 1:
+            logger.info(f"Best strike {best_strike} is the first element (index 0). Checking if we should search in the opposite direction...")
+            
+            # The first strike was the best, which suggests we might be looking in the wrong direction
+            # This can happen with ITM options where delta > 0.5
+            # Let's check a few strikes in the opposite direction to see if we can find a better match
+            
+            # Reverse the strikes list to search in the opposite direction
+            reversed_strikes = list(reversed(strikes))
+            reverse_offset = 0
+            reverse_batch_size = min(batch_size, 10)  # Check fewer strikes in reverse
+            
+            logger.info(f"Searching {reverse_batch_size} strikes in opposite direction...")
+            
+            # Process one batch in the opposite direction
+            reverse_batch_strikes = reversed_strikes[reverse_offset:reverse_offset + reverse_batch_size]
+            
+            if reverse_batch_strikes:
+                # Create option contracts for reverse batch
+                option_contracts = []
+                for strike in reverse_batch_strikes:
+                    option = Option(symbol, expiration, strike, right, "SMART", currency="USD")
+                    option_contracts.append((strike, option))
+                
+                # Qualify all contracts in batch
+                contracts_to_qualify = [opt for _, opt in option_contracts]
+                
+                try:
+                    qualified_contracts = await asyncio.wait_for(
+                        ib.qualifyContractsAsync(*contracts_to_qualify),
+                        timeout=15
+                    )
+                    
+                    # Request market data with greeks for each option
+                    tickers = []
+                    for i, qualified_contract in enumerate(qualified_contracts):
+                        if qualified_contract and isinstance(qualified_contract, Contract):
+                            ticker = ib.reqMktData(qualified_contract, "106", False, False)
+                            tickers.append((reverse_batch_strikes[i], ticker))
+                        else:
+                            logger.warning(f"Failed to qualify contract for strike {reverse_batch_strikes[i]}")
+                    
+                    # Wait for market data to populate
+                    await asyncio.sleep(3)
+                    
+                    # Check if any of these strikes are better
+                    for strike, ticker in tickers:
+                        if (ticker.modelGreeks and 
+                            ticker.modelGreeks.delta is not None and 
+                            isinstance(ticker.modelGreeks.delta, (int, float))):
+                            
+                            delta = ticker.modelGreeks.delta
+                            abs_delta = abs(delta)
+                            diff = abs(abs_delta - target_delta)
+                            
+                            logger.debug(f"Reverse search - Strike {strike}: delta={delta:.4f}, abs_delta={abs_delta:.4f}, diff={diff:.4f}")
+                            
+                            # Update best if this is closer
+                            if diff < best_diff:
+                                logger.info(f"Found better strike in opposite direction: {strike} (delta={delta:.4f}, diff={diff:.4f} vs previous diff={best_diff:.4f})")
+                                best_diff = diff
+                                best_strike = strike
+                                best_delta = delta
+                    
+                    # Cancel all market data subscriptions for reverse batch
+                    for _, ticker in tickers:
+                        ib.cancelMktData(ticker.contract)
+                        
+                except Exception as e:
+                    logger.warning(f"Error searching in opposite direction: {e}", exc_info=True)
         
         if best_strike is not None:
             logger.info(f"Selected strike {best_strike} with delta={best_delta:.4f} (abs={abs(best_delta):.4f}, target={target_delta:.4f}, diff={best_diff:.4f})")

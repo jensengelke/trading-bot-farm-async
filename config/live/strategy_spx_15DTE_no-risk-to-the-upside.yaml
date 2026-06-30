@@ -1,0 +1,66 @@
+# Strategy Bot Configuration - 0 DTE SPX Short Call Butterfly
+# This is an example configuration for the strategy bot
+
+type: strategy
+
+# Underlying: SPX Index
+underlying_type: Index
+underlying_symbol: SPX
+underlying_exchange: CBOE
+
+# Expiration: 0 DTE (same day expiration)
+dte: 15
+use_exact_dte: false  # Allow closest expiration if exact not available
+
+# Schedule: Trade Daily, multiple entries
+entry_days:
+  - Monday
+  - Tuesday
+  - Wednesday
+  - Thursday
+  - Friday
+entry_times:
+  - "09:35"
+  - "10:30"
+  - "11:30"
+  - "12:30"
+  - "13:30"
+  - "14:30"
+
+timezone: America/New_York
+
+# Strategy Structure: Balanced short call butterfly
+# Sell 2 calls at-the-money, buy 1 call 25 points above and below
+legs:
+  - name: center
+    right: call
+    ratio: -2
+    strike_selection: underlying_offset
+    strike_offset: 0
+  
+  - name: top_wing
+    right: call
+    ratio: 1
+    strike_selection: leg_offset
+    strike_selection_parent: center
+    strike_offset: 25
+  
+  - name: bottom_wing
+    right: call
+    ratio: 1
+    strike_selection: leg_offset
+    strike_selection_parent: center
+    strike_offset: -25
+
+# Position Sizing
+num_contracts: 1
+
+# Pricing
+mid_price_monitoring_period: 10  # Monitor for 10 seconds
+min_premium: 0.8 # Minimum debit of $0.80
+max_premium: 1.50  # Maximum debit of $1.50
+max_price_adjustments: 6
+
+# Bracket Orders
+#stoploss_factor: 1.5      # Stop loss at 2.5x initial credit
+takeprofit_factor: 1.6     # Take profit at 160% of initial credit

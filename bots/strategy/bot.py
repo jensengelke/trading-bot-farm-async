@@ -800,6 +800,7 @@ class Bot(BotBase):
             
             # Create limit order
             order = LimitOrder("BUY", num_contracts, limit_price)
+            order.tif = "DAY"
             order.orderRef = f"{self.bot_id}_strategy"
             
             self.logger.info(f"Placing strategy order: {num_contracts} @ {limit_price:.2f}")
@@ -858,14 +859,14 @@ class Bot(BotBase):
                 self.logger.info(f"Order filled at {fill_price:.2f}")
                 
                 # Place bracket orders if configured
-                await self._place_bracket_orders(combo, num_contracts, fill_price)
+                await self._place_bracket_orders(combo, num_contracts, fill_price, min_tick)
             else:
                 self.logger.warning(f"Order not filled - final status: {final_status}")
             
         except Exception as e:
             self.logger.error(f"Error placing strategy order: {e}", exc_info=True)
     
-    async def _place_bracket_orders(self, combo: Contract, quantity: int, fill_price: float) -> None:
+    async def _place_bracket_orders(self, combo: Contract, quantity: int, fill_price: float, min_tick: float) -> None:
         """
         Place bracket orders (stop loss and take profit) if configured.
         
@@ -873,6 +874,7 @@ class Bot(BotBase):
             combo: Combo contract
             quantity: Number of contracts
             fill_price: Fill price of the opening order
+            min_tick: Minimum tick size for the combo
         """
         assert self.ib is not None, "IB connection is not initialized"
         
@@ -890,13 +892,16 @@ class Bot(BotBase):
             # Place stop loss order
             if stoploss_factor is not None:
                 if is_credit:
-                    # Credit: stop loss is at a larger debit (more negative)
-                    # Example: fill at -2.0, factor 1.5 -> stop at -3.0
-                    stop_price = fill_price * (1 + stoploss_factor)
-                else:
-                    # Debit: stop loss is at a smaller value (closer to zero)
-                    # Example: fill at 2.0, factor 0.2 -> stop at 0.4
+                    # Credit: stop loss is at a larger credit (further from zero)
+                    # Example: fill at -2.0, factor 2.5 -> stop at -5.0
                     stop_price = fill_price * stoploss_factor
+                else:
+                    # Debit: stop loss is at a larger value
+                    # Example: fill at 2.0, factor 1.5 -> stop at 3.0
+                    stop_price = fill_price * (1 + stoploss_factor)
+                
+                # Round stop price to minTick
+                stop_price = self._round_to_min_tick(stop_price, min_tick)
                 
                 stop_order = StopOrder("SELL", quantity, stop_price)
                 stop_order.orderRef = f"{self.bot_id}_strategy_stoploss"
@@ -915,7 +920,10 @@ class Bot(BotBase):
                 else:
                     # Debit: take profit is at a larger value
                     # Example: fill at 2.0, factor 1.6 -> profit at 3.2
-                    profit_price = fill_price * (1 + takeprofit_factor)
+                    profit_price = fill_price * takeprofit_factor
+                
+                # Round profit price to minTick
+                profit_price = self._round_to_min_tick(profit_price, min_tick)
                 
                 profit_order = LimitOrder("SELL", quantity, profit_price)
                 profit_order.orderRef = f"{self.bot_id}_strategy_takeprofit"
