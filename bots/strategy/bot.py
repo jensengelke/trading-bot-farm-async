@@ -836,8 +836,8 @@ class Bot(BotBase):
                     # Calculate new price based on initial limit, not current limit
                     # Determine adjustment direction based on whether this is a credit or debit
                     if initial_limit < 0:
-                        # Credit spread - reduce credit (move toward zero)
-                        current_limit = initial_limit - (min_tick * adjustments_made)
+                        # Credit spread - reduce credit (move toward zero, i.e., increase the value)
+                        current_limit = initial_limit + (min_tick * adjustments_made)
                     else:
                         # Debit spread - increase debit (willing to pay more to get filled)
                         current_limit = initial_limit + (min_tick * adjustments_made)
