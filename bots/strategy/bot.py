@@ -82,7 +82,9 @@ class Bot(BotBase):
     
     def _on_ib_error(self, reqId: int, errorCode: int, errorString: str, contract: Contract) -> None:
         """
-        Handle IB error events.
+        Handle IB error events for this bot.
+        
+        This overrides the base class implementation to provide strategy-specific error handling.
         
         Args:
             reqId: Request ID or order ID
@@ -90,7 +92,7 @@ class Bot(BotBase):
             errorString: Error message
             contract: Contract the error applies to (or None)
         """
-        # Log all errors for debugging
+        # Log all errors for debugging (only for this bot's requests)
         if contract:
             self.logger.warning(f"IB Error [reqId={reqId}, code={errorCode}]: {errorString} | Contract: {contract}")
         else:
@@ -113,10 +115,7 @@ class Bot(BotBase):
         try:
             self.ib = await self.ib_connection_manager.connect(host, port, client_id)
             self.logger.info("Using shared IB connection")
-            
-            # Subscribe to error events for detailed error logging
-            self.ib.errorEvent += self._on_ib_error
-            self.logger.debug("Subscribed to IB errorEvent")
+            # Note: Error handling is now automatic via the framework's error dispatcher
         except Exception as e:
             self.logger.error(f"Failed to get IB connection: {e}", exc_info=True)
             raise
@@ -504,21 +503,28 @@ class Bot(BotBase):
                         self.logger.error(f"No strikes available for expiration {expiration}")
                         return None
                     
-                    # Sort strikes appropriately based on option type
-                    if right == "P":
-                        # For puts, search strikes below current price (descending order)
-                        strikes = sorted([s for s in available_strikes if s < current_price], reverse=True)
-                    else:
-                        # For calls, search strikes above current price (ascending order)
-                        strikes = sorted([s for s in available_strikes if s > current_price])
+                    # Sort all available strikes
+                    all_strikes_sorted = sorted(available_strikes)
                     
-                    if not strikes:
+                    # Determine primary and alternate strike lists based on option type
+                    if right == "P":
+                        # For puts, primary search: strikes below current price (descending order)
+                        primary_strikes = sorted([s for s in available_strikes if s < current_price], reverse=True)
+                        # Alternate search: strikes above current price (ascending order)
+                        alternate_strikes = sorted([s for s in available_strikes if s >= current_price])
+                    else:
+                        # For calls, primary search: strikes above current price (ascending order)
+                        primary_strikes = sorted([s for s in available_strikes if s > current_price])
+                        # Alternate search: strikes below current price (descending order)
+                        alternate_strikes = sorted([s for s in available_strikes if s <= current_price], reverse=True)
+                    
+                    if not primary_strikes:
                         self.logger.error(f"No suitable strikes found for {right} options")
                         return None
                     
                     # Use shared utility function to find strike by delta
                     strike = await find_option_by_delta(
-                        self.ib, self.logger, strikes, symbol, expiration, right, target_delta
+                        self.ib, self.logger, primary_strikes, alternate_strikes, symbol, expiration, right, target_delta, current_price
                     )
                     
                     if not strike:
@@ -781,6 +787,7 @@ class Bot(BotBase):
         try:
             num_contracts = self.validated_config.num_contracts
             max_adjustments = self.validated_config.max_price_adjustments
+            wait_seconds = self.validated_config.price_adjustment_wait_seconds
             
             # Create combo contract
             combo = Contract()
@@ -815,8 +822,8 @@ class Bot(BotBase):
             initial_limit = limit_price  # Store initial limit for calculating adjustments
             
             while adjustments_made <= max_adjustments:
-                # Wait 30 seconds for fill
-                await asyncio.sleep(30)
+                # Wait for fill
+                await asyncio.sleep(wait_seconds)
                 
                 # Check order status
                 if trade.orderStatus.status in ["Filled", "Cancelled"]:

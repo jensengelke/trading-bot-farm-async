@@ -232,6 +232,13 @@ class StrategyBotConfig(BaseModel):
         description="Maximum number of price adjustments if order not filled (0-20)"
     )
     
+    price_adjustment_wait_seconds: int = Field(
+        default=30,
+        ge=1,
+        le=300,
+        description="Time in seconds to wait before adjusting price if order not filled (1-300)"
+    )
+    
     # Bracket orders
     stoploss_factor: Optional[float] = Field(
         default=None,

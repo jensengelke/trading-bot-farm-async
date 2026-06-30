@@ -8,6 +8,7 @@ import asyncio
 from typing import Optional
 from ib_async import IB
 import logging
+from framework.request_tracker import get_error_dispatcher
 
 
 class IBConnectionManager:
@@ -26,6 +27,8 @@ class IBConnectionManager:
         self._port: Optional[int] = None
         self._client_id: Optional[int] = None
         self._logger = logging.getLogger("system")
+        self._error_dispatcher = get_error_dispatcher()
+        self._error_handler_registered = False
     
     async def connect(self, host: str, port: int, client_id: int) -> IB:
         """
@@ -61,6 +64,13 @@ class IBConnectionManager:
                 self._host = host
                 self._port = port
                 self._client_id = client_id
+                
+                # Register global error handler if not already registered
+                if not self._error_handler_registered:
+                    self._ib.errorEvent += self._on_ib_error
+                    self._error_handler_registered = True
+                    self._logger.info("Registered global error dispatcher")
+                
                 self._logger.info(f"Successfully connected to IB at {host}:{port}")
                 return self._ib
             except Exception as e:
@@ -80,6 +90,19 @@ class IBConnectionManager:
             return self._ib
         return None
     
+    def _on_ib_error(self, reqId: int, errorCode: int, errorString: str, contract) -> None:
+        """
+        Global error handler that dispatches errors to the appropriate bot.
+        
+        Args:
+            reqId: Request ID or order ID
+            errorCode: IB error code
+            errorString: Error message
+            contract: Contract the error applies to (or None)
+        """
+        # Dispatch to the appropriate bot via the error dispatcher
+        self._error_dispatcher.dispatch_error(reqId, errorCode, errorString, contract)
+    
     async def disconnect(self) -> None:
         """
         Disconnect the shared IB connection.
@@ -89,6 +112,12 @@ class IBConnectionManager:
         async with self._connection_lock:
             if self._ib and self._ib.isConnected():
                 self._logger.info("Disconnecting shared IB connection")
+                
+                # Unregister error handler
+                if self._error_handler_registered:
+                    self._ib.errorEvent -= self._on_ib_error
+                    self._error_handler_registered = False
+                
                 self._ib.disconnect()
                 self._connected = False
                 self._logger.info("Disconnected from IB")

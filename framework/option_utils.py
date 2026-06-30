@@ -13,18 +13,21 @@ import logging
 async def find_option_by_delta(
     ib: IB,
     logger: logging.Logger,
-    strikes: List[float],
+    primary_strikes: List[float],
+    alternate_strikes: List[float],
     symbol: str,
     expiration: str,
     right: str,
     target_delta: float,
+    current_price: float,
     batch_size: int = 20
 ) -> Optional[float]:
     """
     Find the strike with delta closest to target using actual option greeks from IB.
     
-    Processes strikes in batches, stopping early if a delta smaller than target is found.
-    This ensures we find the optimal strike even if it's beyond the first batch.
+    Searches primary strikes first (e.g., OTM strikes), then checks alternate strikes
+    (e.g., ITM strikes) if the best match is the first element, indicating we may be
+    searching in the wrong direction.
     
     For puts, delta is negative. This function uses abs() to compare absolute delta values,
     so you should pass target_delta as a positive value (e.g., 0.35 for a put with -0.35 delta).
@@ -32,24 +35,26 @@ async def find_option_by_delta(
     Args:
         ib: Connected IB instance
         logger: Logger instance for logging
-        strikes: List of available strikes (should be sorted appropriately for the option type)
+        primary_strikes: Primary list of strikes to search (sorted appropriately)
+        alternate_strikes: Alternate list of strikes to search if needed (opposite direction)
         symbol: Underlying symbol (e.g., "SPX")
         expiration: Option expiration date (format: YYYYMMDD)
         right: Option right ("C" for call, "P" for put)
         target_delta: Target delta value as absolute value (e.g., 0.35)
+        current_price: Current price of the underlying
         batch_size: Number of strikes to process per batch (default: 20)
         
     Returns:
         Strike with delta closest to target, or None if not found
         
     Example:
-        # Find put with delta closest to -0.35 (pass 0.35 as target)
+        # Find call with delta closest to 0.65
         strike = await find_option_by_delta(
-            ib, logger, strikes, "SPX", "20260628", "P", 0.35
+            ib, logger, primary_strikes, alternate_strikes, "SPX", "20260714", "C", 0.65, 7490.0
         )
     """
     try:
-        logger.info(f"Finding strike with delta closest to {target_delta} (target absolute value)")
+        logger.info(f"Finding strike with delta closest to {target_delta} (target absolute value, current price: {current_price:.2f})")
         
         best_strike = None
         best_delta = None
@@ -58,9 +63,9 @@ async def find_option_by_delta(
         
         offset = 0
         
-        # Process strikes in batches until we find a delta smaller than target or run out of strikes
-        while offset < len(strikes):
-            batch_strikes = strikes[offset:offset + batch_size]
+        # Process primary strikes in batches until we find a delta smaller than target or run out of strikes
+        while offset < len(primary_strikes):
+            batch_strikes = primary_strikes[offset:offset + batch_size]
             
             if not batch_strikes:
                 break
@@ -147,28 +152,25 @@ async def find_option_by_delta(
             # Move to next batch
             offset += batch_size
         
-        # Check if the best strike is the first element - this might indicate we need to search the other direction
-        if best_strike is not None and best_strike_index == 0 and len(strikes) > 1:
-            logger.info(f"Best strike {best_strike} is the first element (index 0). Checking if we should search in the opposite direction...")
+        # Check if the best strike is the first element - this might indicate we need to search the alternate direction
+        if best_strike is not None and best_strike_index == 0 and len(alternate_strikes) > 0:
+            logger.info(f"Best strike {best_strike} is the first element (index 0). Searching alternate strikes (opposite side of current price)...")
             
             # The first strike was the best, which suggests we might be looking in the wrong direction
             # This can happen with ITM options where delta > 0.5
-            # Let's check a few strikes in the opposite direction to see if we can find a better match
+            # Search the alternate strikes (e.g., ITM strikes if we were searching OTM)
             
-            # Reverse the strikes list to search in the opposite direction
-            reversed_strikes = list(reversed(strikes))
-            reverse_offset = 0
-            reverse_batch_size = min(batch_size, 10)  # Check fewer strikes in reverse
+            alternate_batch_size = min(batch_size, 10)  # Check fewer strikes in alternate direction
             
-            logger.info(f"Searching {reverse_batch_size} strikes in opposite direction...")
+            logger.info(f"Searching up to {alternate_batch_size} alternate strikes...")
             
-            # Process one batch in the opposite direction
-            reverse_batch_strikes = reversed_strikes[reverse_offset:reverse_offset + reverse_batch_size]
+            # Process one batch of alternate strikes
+            alternate_batch_strikes = alternate_strikes[:alternate_batch_size]
             
-            if reverse_batch_strikes:
-                # Create option contracts for reverse batch
+            if alternate_batch_strikes:
+                # Create option contracts for alternate batch
                 option_contracts = []
-                for strike in reverse_batch_strikes:
+                for strike in alternate_batch_strikes:
                     option = Option(symbol, expiration, strike, right, "SMART", currency="USD")
                     option_contracts.append((strike, option))
                 
@@ -186,9 +188,9 @@ async def find_option_by_delta(
                     for i, qualified_contract in enumerate(qualified_contracts):
                         if qualified_contract and isinstance(qualified_contract, Contract):
                             ticker = ib.reqMktData(qualified_contract, "106", False, False)
-                            tickers.append((reverse_batch_strikes[i], ticker))
+                            tickers.append((alternate_batch_strikes[i], ticker))
                         else:
-                            logger.warning(f"Failed to qualify contract for strike {reverse_batch_strikes[i]}")
+                            logger.warning(f"Failed to qualify contract for strike {alternate_batch_strikes[i]}")
                     
                     # Wait for market data to populate
                     await asyncio.sleep(3)
@@ -203,21 +205,21 @@ async def find_option_by_delta(
                             abs_delta = abs(delta)
                             diff = abs(abs_delta - target_delta)
                             
-                            logger.debug(f"Reverse search - Strike {strike}: delta={delta:.4f}, abs_delta={abs_delta:.4f}, diff={diff:.4f}")
+                            logger.debug(f"Alternate search - Strike {strike}: delta={delta:.4f}, abs_delta={abs_delta:.4f}, diff={diff:.4f}")
                             
                             # Update best if this is closer
                             if diff < best_diff:
-                                logger.info(f"Found better strike in opposite direction: {strike} (delta={delta:.4f}, diff={diff:.4f} vs previous diff={best_diff:.4f})")
+                                logger.info(f"Found better strike in alternate direction: {strike} (delta={delta:.4f}, diff={diff:.4f} vs previous diff={best_diff:.4f})")
                                 best_diff = diff
                                 best_strike = strike
                                 best_delta = delta
                     
-                    # Cancel all market data subscriptions for reverse batch
+                    # Cancel all market data subscriptions for alternate batch
                     for _, ticker in tickers:
                         ib.cancelMktData(ticker.contract)
                         
                 except Exception as e:
-                    logger.warning(f"Error searching in opposite direction: {e}", exc_info=True)
+                    logger.warning(f"Error searching alternate strikes: {e}", exc_info=True)
         
         if best_strike is not None:
             logger.info(f"Selected strike {best_strike} with delta={best_delta:.4f} (abs={abs(best_delta):.4f}, target={target_delta:.4f}, diff={best_diff:.4f})")

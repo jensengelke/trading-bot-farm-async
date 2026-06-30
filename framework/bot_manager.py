@@ -194,6 +194,9 @@ class BotManager:
                         pass
                 del self.bot_tasks[bot_id]
             
+            # Cleanup bot resources (request tracking, error handlers)
+            bot.cleanup()
+            
             del self.bots[bot_id]
             print(f"Bot {bot_id} stopped")
             self.logger.info(f"Bot {bot_id} stopped")
