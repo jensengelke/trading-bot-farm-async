@@ -58,7 +58,7 @@ num_contracts: 1
 mid_price_monitoring_period: 10  # Monitor for 10 seconds
 min_premium: 0.8 # Minimum debit of $0.80
 max_premium: 1.50  # Maximum debit of $1.50
-max_price_adjustments: 4
+max_price_adjustments: 6
 
 # Bracket Orders
 #stoploss_factor: 1.5      # Stop loss at 2.5x initial credit

@@ -79,6 +79,22 @@ class Bot(BotBase):
         
         # Track current position being opened (for linking fills to positions)
         self._pending_position_id: Optional[str] = None
+    
+    def _on_ib_error(self, reqId: int, errorCode: int, errorString: str, contract: Contract) -> None:
+        """
+        Handle IB error events.
+        
+        Args:
+            reqId: Request ID or order ID
+            errorCode: IB error code
+            errorString: Error message
+            contract: Contract the error applies to (or None)
+        """
+        # Log all errors for debugging
+        if contract:
+            self.logger.warning(f"IB Error [reqId={reqId}, code={errorCode}]: {errorString} | Contract: {contract}")
+        else:
+            self.logger.warning(f"IB Error [reqId={reqId}, code={errorCode}]: {errorString}")
         
     async def start(self) -> None:
         """
@@ -97,6 +113,10 @@ class Bot(BotBase):
         try:
             self.ib = await self.ib_connection_manager.connect(host, port, client_id)
             self.logger.info("Using shared IB connection")
+            
+            # Subscribe to error events for detailed error logging
+            self.ib.errorEvent += self._on_ib_error
+            self.logger.debug("Subscribed to IB errorEvent")
         except Exception as e:
             self.logger.error(f"Failed to get IB connection: {e}", exc_info=True)
             raise
@@ -572,11 +592,24 @@ class Bot(BotBase):
                 # Create option contract
                 option = Option(symbol, expiration, strike, right, "SMART", currency="USD")
                 
+                # Log contract details before qualification
+                self.logger.debug(f"Attempting to qualify option for leg '{leg_config.name}': {symbol} {expiration} {strike} {right} SMART USD")
+                
                 # Qualify contract
                 qualified = await self.ib.qualifyContractsAsync(option)
                 
-                if not qualified or not isinstance(qualified[0], Contract):
-                    self.logger.error(f"Failed to qualify option contract for leg '{leg_config.name}'")
+                # Log detailed qualification result
+                self.logger.debug(f"Qualification result for leg '{leg_config.name}': qualified={qualified}, type={type(qualified)}, len={len(qualified) if qualified else 0}")
+                
+                if not qualified:
+                    self.logger.error(f"Failed to qualify option contract for leg '{leg_config.name}': qualifyContractsAsync returned empty list")
+                    self.logger.error(f"  Contract details: symbol={symbol}, expiration={expiration}, strike={strike}, right={right}, exchange=SMART, currency=USD")
+                    return None
+                
+                if not isinstance(qualified[0], Contract):
+                    self.logger.error(f"Failed to qualify option contract for leg '{leg_config.name}': result is not a Contract instance")
+                    self.logger.error(f"  Result type: {type(qualified[0])}, Result value: {qualified[0]}")
+                    self.logger.error(f"  Contract details: symbol={symbol}, expiration={expiration}, strike={strike}, right={right}, exchange=SMART, currency=USD")
                     return None
                 
                 option_contracts.append((leg_config, qualified[0]))
@@ -901,6 +934,14 @@ class Bot(BotBase):
         """
         self.logger.info("Stopping Strategy bot")
         self._stop_requested = True
+        
+        # Unsubscribe from error events
+        if self.ib:
+            try:
+                self.ib.errorEvent -= self._on_ib_error
+                self.logger.debug("Unsubscribed from IB errorEvent")
+            except Exception as e:
+                self.logger.error(f"Error unsubscribing from errorEvent: {e}", exc_info=True)
         
         # Cancel any active orders
         if self._active_trades and self.ib:
