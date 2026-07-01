@@ -601,16 +601,27 @@ class Bot(BotBase):
                 # Log contract details before qualification
                 self.logger.debug(f"Attempting to qualify option for leg '{leg_config.name}': {symbol} {expiration} {strike} {right} SMART USD")
                 
+                # Specify trading class for SPX options to avoid ambiguity
+                if symbol == "SPX":
+                    option.tradingClass = "SPXW"
+                    self.logger.debug(f"Set tradingClass='SPXW' for SPX option to resolve ambiguity")
+
                 # Qualify contract
                 qualified = await self.ib.qualifyContractsAsync(option)
                 
                 # Log detailed qualification result
                 self.logger.debug(f"Qualification result for leg '{leg_config.name}': qualified={qualified}, type={type(qualified)}, len={len(qualified) if qualified else 0}")
                 
-                if not qualified:
-                    self.logger.error(f"Failed to qualify option contract for leg '{leg_config.name}': qualifyContractsAsync returned empty list")
-                    self.logger.error(f"  Contract details: symbol={symbol}, expiration={expiration}, strike={strike}, right={right}, exchange=SMART, currency=USD")
-                    return None
+                if not qualified or qualified[0] is None:
+                    # If it failed, try without trading class or with "SPX"
+                    self.logger.warning(f"Qualification failed with SPXW for leg '{leg_config.name}', trying alternative...")
+                    option.tradingClass = ""
+                    qualified = await self.ib.qualifyContractsAsync(option)
+                    
+                    if not qualified or qualified[0] is None:
+                        self.logger.error(f"Failed to qualify option contract for leg '{leg_config.name}': qualifyContractsAsync returned empty list or None")
+                        self.logger.error(f"  Contract details: symbol={symbol}, expiration={expiration}, strike={strike}, right={right}, exchange=SMART, currency=USD")
+                        return None
                 
                 # Handle ambiguous contracts (multiple matches)
                 if len(qualified) > 1:
