@@ -61,4 +61,4 @@ max_price_adjustments: 2
 price_adjustment_wait_seconds: 60  # Wait 30 seconds before adjusting price (if max_price_adjustments > 0)
 
 # Bracket Orders
-takeprofit_factor: 1.2  # Take profit at 150% of initial debit
+takeprofit_factor: 0.8  # Take profit at 150% of initial debit

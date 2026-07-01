@@ -612,13 +612,37 @@ class Bot(BotBase):
                     self.logger.error(f"  Contract details: symbol={symbol}, expiration={expiration}, strike={strike}, right={right}, exchange=SMART, currency=USD")
                     return None
                 
-                if not isinstance(qualified[0], Contract):
+                # Handle ambiguous contracts (multiple matches)
+                if len(qualified) > 1:
+                    self.logger.warning(f"Ambiguous contract for leg '{leg_config.name}': {len(qualified)} matches found")
+                    # For SPX options, always prefer SPXW (weekly options)
+                    preferred_trading_class = "SPXW"
+                    self.logger.info(f"Preferring trading class: {preferred_trading_class}")
+                    
+                    # Try to find contract with preferred trading class
+                    selected_contract = None
+                    for contract in qualified:
+                        if hasattr(contract, 'tradingClass') and contract.tradingClass == preferred_trading_class:
+                            selected_contract = contract
+                            self.logger.info(f"Selected contract with trading class {preferred_trading_class}: {contract.localSymbol}")
+                            break
+                    
+                    # If preferred not found, use first contract
+                    if selected_contract is None:
+                        selected_contract = qualified[0]
+                        self.logger.warning(f"Preferred trading class {preferred_trading_class} not found, using first contract: {selected_contract.localSymbol if hasattr(selected_contract, 'localSymbol') else selected_contract}")
+                    
+                    qualified_contract = selected_contract
+                else:
+                    qualified_contract = qualified[0]
+                
+                if not isinstance(qualified_contract, Contract):
                     self.logger.error(f"Failed to qualify option contract for leg '{leg_config.name}': result is not a Contract instance")
-                    self.logger.error(f"  Result type: {type(qualified[0])}, Result value: {qualified[0]}")
+                    self.logger.error(f"  Result type: {type(qualified_contract)}, Result value: {qualified_contract}")
                     self.logger.error(f"  Contract details: symbol={symbol}, expiration={expiration}, strike={strike}, right={right}, exchange=SMART, currency=USD")
                     return None
                 
-                option_contracts.append((leg_config, qualified[0]))
+                option_contracts.append((leg_config, qualified_contract))
                 self.logger.info(f"Qualified option for leg '{leg_config.name}': {symbol} {expiration} {strike} {right}")
             
             return option_contracts
@@ -958,15 +982,20 @@ class Bot(BotBase):
             except Exception as e:
                 self.logger.error(f"Error unsubscribing from errorEvent: {e}", exc_info=True)
         
-        # Cancel any active orders
+        # Cancel only non-bracket orders (don't cancel stop loss or take profit orders)
         if self._active_trades and self.ib:
             for trade in self._active_trades:
                 try:
                     if trade.orderStatus.status not in ["Filled", "Cancelled"]:
-                        self.ib.cancelOrder(trade.order)
-                        self.logger.info(f"Cancelled order: {trade.order.orderRef}")
+                        # Only cancel orders that are NOT bracket orders (stop loss or take profit)
+                        order_ref = trade.order.orderRef
+                        if order_ref and ("_stoploss" in order_ref or "_takeprofit" in order_ref):
+                            self.logger.info(f"Preserving bracket order: {order_ref}")
+                        else:
+                            self.ib.cancelOrder(trade.order)
+                            self.logger.info(f"Cancelled order: {order_ref}")
                 except Exception as e:
-                    self.logger.error(f"Error cancelling order: {e}", exc_info=True)
+                    self.logger.error(f"Error processing order during shutdown: {e}", exc_info=True)
         
         # Don't disconnect - the shared connection is managed by the framework
         self.ib = None
