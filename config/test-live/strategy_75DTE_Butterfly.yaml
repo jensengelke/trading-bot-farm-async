@@ -1,0 +1,68 @@
+# FKK Strategy Bot Configuration
+# This is an example of using the strategy bot with FKK-style entry conditions
+
+type: strategy
+
+test_mode: true
+
+# Entry conditions - all must be met before placing trade
+entry_conditions:
+  - name: VIX
+    type: VIX
+    threshold: 75
+    operator: ">="
+  
+
+# Underlying configuration
+underlying_type: Index
+underlying_symbol: SPX
+underlying_exchange: CBOE
+
+# Expiration configuration
+dte: 75 
+use_exact_dte: false
+
+# Scheduling configuration
+entry_days:
+  - Tuesday
+  - Wednesday
+  - Thursday
+  - Friday
+
+entry_times:
+  - "14:28"
+
+timezone: America/New_York
+
+# Leg configuration - Bull Put Spread
+legs:
+  - name: center
+    right: put
+    ratio: -2  # Sell
+    strike_selection: delta
+    strike_selection_delta: 0.45
+  
+  - name: top_wing
+    right: put
+    ratio: 1  # Buy
+    strike_selection: underlying_offset
+    strike_offset: 35
+
+  - name: bottom_wing
+    right: put
+    ratio: 1  # Buy
+    strike_selection: underlying_offset
+    strike_offset: -55
+
+# Position sizing
+num_contracts: 1
+
+# Pricing configuration
+mid_price_monitoring_period: 10  # seconds
+min_premium: null  # No minimum (allow any credit)
+max_premium: null  # No maximum
+max_price_adjustments: 4
+
+# Bracket orders (optional)
+stoploss_factor: null
+takeprofit_factor: null

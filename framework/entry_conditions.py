@@ -215,6 +215,102 @@ class UnderlyingIntradayMoveCondition(EntryCondition):
             return False
 
 
+class VIXCondition(EntryCondition):
+    """
+    VIX level condition.
+    
+    Checks if VIX index meets the specified threshold.
+    
+    Configuration:
+        - threshold: VIX value (e.g., 15)
+        - operator: Comparison operator (">", ">=", "<", "<=")
+    """
+    
+    def __init__(self, name: str, config: Dict[str, Any], logger: logging.Logger):
+        super().__init__(name, config, logger)
+        
+        threshold = config.get("threshold")
+        operator = config.get("operator")
+        
+        if threshold is None:
+            raise ValueError(f"VIX condition '{name}': threshold is required")
+        
+        if operator not in [">", ">=", "<", "<="]:
+            raise ValueError(f"VIX condition '{name}': operator must be one of: >, >=, <, <=")
+        
+        self.threshold: float = threshold
+        self.operator: str = operator
+    
+    async def evaluate(self, ib: IB, underlying: Contract, current_price: float) -> bool:
+        """
+        Evaluate if current VIX level meets the threshold.
+        """
+        import math
+        from ib_async import Index
+        
+        try:
+            # Create VIX index contract
+            vix_contract = Index('VIX', 'CBOE', 'USD')
+            qualified = await ib.qualifyContractsAsync(vix_contract)
+            
+            if not qualified or not isinstance(qualified[0], Contract):
+                self.logger.error(f"Condition '{self.name}': Failed to qualify VIX contract")
+                return False
+                
+            vix = qualified[0]
+            
+            ticker = ib.reqMktData(vix, "", False, False)
+            
+            # Wait for market data with retries
+            for _ in range(5):
+                await asyncio.sleep(1)
+                # Check for valid price
+                if ticker.last and ticker.last > 0 and not math.isnan(ticker.last):
+                    break
+                elif ticker.close and ticker.close > 0 and not math.isnan(ticker.close):
+                    ticker.last = ticker.close
+                    break
+            
+            if not ticker.last or ticker.last <= 0 or math.isnan(ticker.last):
+                self.logger.warning(
+                    f"Condition '{self.name}': Could not get valid VIX price: "
+                    f"last={ticker.last}, close={ticker.close}"
+                )
+                ib.cancelMktData(vix)
+                return False
+                
+            vix_price = ticker.last
+            ib.cancelMktData(vix)
+            
+            self.logger.info(
+                f"Condition '{self.name}': VIX={vix_price:.2f}, "
+                f"Threshold={self.threshold:.2f}"
+            )
+            
+            # Evaluate condition based on operator
+            if self.operator == ">":
+                result = vix_price > self.threshold
+            elif self.operator == ">=":
+                result = vix_price >= self.threshold
+            elif self.operator == "<":
+                result = vix_price < self.threshold
+            else:  # "<="
+                result = vix_price <= self.threshold
+            
+            self.logger.info(
+                f"Condition '{self.name}': {vix_price:.2f} {self.operator} {self.threshold:.2f} = {result}"
+            )
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(
+                f"Condition '{self.name}': Error evaluating VIX: {e}",
+                exc_info=True
+            )
+            return False
+
+
 class EntryConditionEvaluator:
     """
     Evaluates a list of entry conditions.
@@ -226,6 +322,7 @@ class EntryConditionEvaluator:
     CONDITION_TYPES = {
         "SMA": SMACondition,
         "underlying_intraday_move": UnderlyingIntradayMoveCondition,
+        "VIX": VIXCondition,
     }
     
     def __init__(self, conditions_config: list, logger: logging.Logger):

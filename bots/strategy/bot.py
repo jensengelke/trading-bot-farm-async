@@ -260,8 +260,11 @@ class Bot(BotBase):
                     self.ib, underlying, current_price
                 )
                 if not conditions_met:
-                    self.logger.info("Entry conditions not met - skipping trade")
-                    return
+                    if getattr(self.validated_config, "test_mode", False):
+                        self.logger.info("Entry conditions not met, but test_mode is true - continuing")
+                    else:
+                        self.logger.info("Entry conditions not met - skipping trade")
+                        return
             
             # Step 3: Find expiration date
             expiration = await self._find_expiration(underlying)
@@ -304,6 +307,14 @@ class Bot(BotBase):
             self.logger.info(f"Final limit price: {limit_price:.2f}")
             
             # Step 10: Place strategy order
+            if getattr(self.validated_config, "test_mode", False):
+                self.logger.info("TEST MODE: Skipping order placement.")
+                self.logger.info("Selected contracts:")
+                for leg_config, contract in option_contracts:
+                    self.logger.info(f"  {leg_config.name}: {contract.localSymbol} ({leg_config.ratio} {leg_config.right} @ {contract.strike})")
+                self.logger.info(f"Target limit price: {limit_price:.2f}")
+                return
+            
             await self._place_strategy_order(option_contracts, limit_price, min_tick)
             
         except Exception as e:
@@ -481,38 +492,37 @@ class Bot(BotBase):
             symbol = self.validated_config.underlying_symbol
             underlying_type = self.validated_config.underlying_type
             
-            # Get option chains for delta-based selection
-            chains = None
-            if any(leg.strike_selection == "delta" for leg in self.validated_config.legs):
-                sec_type = "IND" if underlying_type == "Index" else "STK"
-                chains = await self.ib.reqSecDefOptParamsAsync(symbol, "", sec_type, underlying.conId)
-                if not chains:
-                    self.logger.error(f"No option chains found for {symbol}")
-                    return None
+            # Get option chains to find available strikes
+            sec_type = "IND" if underlying_type == "Index" else "STK"
+            chains = await self.ib.reqSecDefOptParamsAsync(symbol, "", sec_type, underlying.conId)
+            if not chains:
+                self.logger.error(f"No option chains found for {symbol}")
+                return None
+                
+            # Get available strikes from chains for the selected expiration
+            available_strikes = set()
+            for chain in chains:
+                if expiration in chain.expirations:
+                    available_strikes.update(chain.strikes)
+            
+            if not available_strikes:
+                self.logger.error(f"No strikes available for expiration {expiration}")
+                return None
             
             # First pass: determine strikes for legs with underlying_offset and delta
             for leg_config in self.validated_config.legs:
                 if leg_config.strike_selection == "underlying_offset":
-                    strike = current_price + leg_config.strike_offset
-                    # Round to nearest valid strike (typically 5 or 1 point increments)
-                    strike = self._round_to_valid_strike(strike)
+                    offset = leg_config.strike_offset if leg_config.strike_offset is not None else 0.0
+                    target_strike = current_price + offset
+                    # Find the closest available strike
+                    strike = min(available_strikes, key=lambda x: abs(x - target_strike))
                     leg_strikes[leg_config.name] = strike
-                    self.logger.info(f"Leg '{leg_config.name}': strike={strike:.2f} (underlying_offset={leg_config.strike_offset})")
+                    self.logger.info(f"Leg '{leg_config.name}': target_strike={target_strike:.2f}, selected_strike={strike:.2f} (underlying_offset={offset})")
                 
                 elif leg_config.strike_selection == "delta":
                     # Find strike by delta
                     target_delta = leg_config.strike_selection_delta
                     right = "C" if leg_config.right == "call" else "P"
-                    
-                    # Get available strikes from chains
-                    available_strikes = set()
-                    for chain in chains:
-                        if expiration in chain.expirations:
-                            available_strikes.update(chain.strikes)
-                    
-                    if not available_strikes:
-                        self.logger.error(f"No strikes available for expiration {expiration}")
-                        return None
                     
                     # Sort all available strikes
                     all_strikes_sorted = sorted(available_strikes)
@@ -554,10 +564,12 @@ class Bot(BotBase):
                         return None
                     
                     parent_strike = leg_strikes[parent_name]
-                    strike = parent_strike + leg_config.strike_offset
-                    strike = self._round_to_valid_strike(strike)
+                    offset = leg_config.strike_offset if leg_config.strike_offset is not None else 0.0
+                    target_strike = parent_strike + offset
+                    # Find the closest available strike
+                    strike = min(available_strikes, key=lambda x: abs(x - target_strike))
                     leg_strikes[leg_config.name] = strike
-                    self.logger.info(f"Leg '{leg_config.name}': strike={strike:.2f} (leg_offset={leg_config.strike_offset} from '{parent_name}')")
+                    self.logger.info(f"Leg '{leg_config.name}': target_strike={target_strike:.2f}, selected_strike={strike:.2f} (leg_offset={offset} from '{parent_name}')")
             
             return leg_strikes
             

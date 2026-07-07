@@ -153,3 +153,4 @@ config/**/.secret-config.yaml
 # Log files
 logs/
 *.log
+*.db

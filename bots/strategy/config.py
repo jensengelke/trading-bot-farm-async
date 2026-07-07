@@ -81,9 +81,9 @@ class EntryConditionConfig(BaseModel):
     
     name: str = Field(..., description="Name of the condition for logging")
     
-    type: Literal["SMA", "underlying_intraday_move"] = Field(
+    type: Literal["SMA", "underlying_intraday_move", "VIX"] = Field(
         ...,
-        description="Type of condition: 'SMA' or 'underlying_intraday_move'"
+        description="Type of condition: 'SMA', 'underlying_intraday_move', or 'VIX'"
     )
     
     # SMA-specific fields
@@ -99,10 +99,10 @@ class EntryConditionConfig(BaseModel):
         description="Comparison operator (required for all types)"
     )
     
-    # Intraday move-specific fields
+    # Intraday move/VIX-specific fields
     threshold: Optional[float] = Field(
         default=None,
-        description="Threshold as decimal (e.g., 0.003 for 0.3%, required for underlying_intraday_move)"
+        description="Threshold (e.g., 0.003 for 0.3% move, or 15 for VIX level, required for underlying_intraday_move and VIX)"
     )
 
 
@@ -138,6 +138,11 @@ class StrategyBotConfig(BaseModel):
     """
     
     type: str = Field(..., description="Bot type identifier (must be 'strategy')")
+    
+    test_mode: bool = Field(
+        default=False,
+        description="If true, evaluates conditions but ignores them, selects and prints contracts, but does not place any orders."
+    )
     
     # Entry conditions
     entry_conditions: Optional[List[EntryConditionConfig]] = Field(
