@@ -352,13 +352,24 @@ class Bot(BotBase):
             Current price, or None if error
         """
         assert self.ib is not None, "IB connection is not initialized"
+        import math
         
         try:
             ticker = self.ib.reqMktData(underlying, "", False, False)
-            await asyncio.sleep(2)  # Wait for market data
             
-            if not ticker.last or ticker.last <= 0:
-                self.logger.warning("Could not get current price from ticker.last")
+            # Wait for market data with retries
+            for _ in range(5):
+                await asyncio.sleep(1)
+                # Check for valid price (last or close, and not NaN)
+                if ticker.last and ticker.last > 0 and not math.isnan(ticker.last):
+                    break
+                elif ticker.close and ticker.close > 0 and not math.isnan(ticker.close):
+                    # Use close price if last is not available (e.g. pre-market or illiquid)
+                    ticker.last = ticker.close
+                    break
+            
+            if not ticker.last or ticker.last <= 0 or math.isnan(ticker.last):
+                self.logger.warning(f"Could not get valid current price from ticker: last={ticker.last}, close={ticker.close}")
                 self.ib.cancelMktData(underlying)
                 return None
             
@@ -948,6 +959,7 @@ class Bot(BotBase):
                 stop_order = StopOrder("SELL", quantity, stop_price)
                 stop_order.orderRef = f"{self.bot_id}_strategy_stoploss"
                 stop_order.tif = "GTC"
+                stop_order.outsideRth = True  # Allow trigger outside regular trading hours
                 
                 self.logger.info(f"Placing stop loss order: SELL {quantity} @ STP {stop_price:.2f}")
                 stop_trade = self.ib.placeOrder(combo, stop_order)
@@ -970,7 +982,7 @@ class Bot(BotBase):
                 profit_order = LimitOrder("SELL", quantity, profit_price)
                 profit_order.orderRef = f"{self.bot_id}_strategy_takeprofit"
                 profit_order.tif = "GTC"
-                
+                profit_order.outsideRth = True  # Allow trigger outside regular trading hours
                 self.logger.info(f"Placing take profit order: SELL {quantity} @ LMT {profit_price:.2f}")
                 profit_trade = self.ib.placeOrder(combo, profit_order)
                 self._active_trades.append(profit_trade)
