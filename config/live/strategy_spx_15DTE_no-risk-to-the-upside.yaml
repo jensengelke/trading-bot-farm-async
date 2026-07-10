@@ -20,7 +20,7 @@ entry_days:
   - Thursday
   - Friday
 entry_times:
-  - "23:42" # no entry for now
+  #- "23:42" # no entry for now
   #- "10:30"
   #- "11:30"
   #- "12:30"
