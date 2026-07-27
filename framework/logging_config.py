@@ -40,11 +40,31 @@ class LoggingConfig:
         # Rotate existing logs
         self._rotate_logs()
         
+        # Configure root logger to ensure all console output has timestamps
+        self._configure_root_logger()
+        
         # Configure system logger
         self.system_logger = self._create_logger("system")
         
         # Track bot loggers
         self.bot_loggers = {}
+    
+    def _configure_root_logger(self) -> None:
+        """Configure the root logger to add timestamps to all console output."""
+        root_logger = logging.getLogger()
+        root_logger.setLevel(logging.WARNING)
+        
+        # Remove any existing handlers
+        root_logger.handlers.clear()
+        
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        console_handler.setFormatter(formatter)
+        root_logger.addHandler(console_handler)
     
     def _rotate_logs(self) -> None:
         """

@@ -20,12 +20,12 @@ entry_days:
   - Thursday
   - Friday
 entry_times:
-  #- "23:42" # no entry for now
+  - "09:42" 
   #- "10:30"
-  #- "11:30"
+  - "11:30"
   #- "12:30"
   #- "13:30"
-  #- "14:30"
+  - "14:30"
 
 timezone: America/New_York
 

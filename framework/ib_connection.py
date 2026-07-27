@@ -11,6 +11,8 @@ import logging
 from framework.request_tracker import get_error_dispatcher
 
 
+from ib_async import IBC, Watchdog
+
 class IBConnectionManager:
     """
     Manages a shared IB connection for all bots.
@@ -21,6 +23,7 @@ class IBConnectionManager:
     def __init__(self):
         """Initialize the connection manager."""
         self._ib: Optional[IB] = None
+        self._watchdog: Optional[Watchdog] = None
         self._connection_lock = asyncio.Lock()
         self._connected = False
         self._host: Optional[str] = None
@@ -30,14 +33,15 @@ class IBConnectionManager:
         self._error_dispatcher = get_error_dispatcher()
         self._error_handler_registered = False
     
-    async def connect(self, host: str, port: int, client_id: int) -> IB:
+    async def connect(self, host: str, port: int, client_id: int, ibc_config=None) -> IB:
         """
-        Get or create the shared IB connection.
+        Get or create the shared IB connection, optionally using IBC and Watchdog.
         
         Args:
             host: IB Gateway/TWS host address
             port: IB Gateway/TWS port
             client_id: Client ID for the connection
+            ibc_config: Optional dictionary or Pydantic object with IBC settings
             
         Returns:
             Shared IB connection instance
@@ -59,7 +63,45 @@ class IBConnectionManager:
             self._ib = IB()
             
             try:
-                await self._ib.connectAsync(host, port, clientId=client_id)
+                if ibc_config and getattr(ibc_config, 'enabled', False) or (isinstance(ibc_config, dict) and ibc_config.get('enabled')):
+                    self._logger.info("IBC and Watchdog are enabled. Configuring Watchdog...")
+                    
+                    # Convert to dict if it's a pydantic model
+                    config_dict = ibc_config if isinstance(ibc_config, dict) else ibc_config.dict()
+                    
+                    ibc = IBC(
+                        twsVersion=config_dict.get('twsVersion', 1045),
+                        gateway=config_dict.get('gateway', True),
+                        tradingMode=config_dict.get('tradingMode', 'paper'),
+                        userid=config_dict.get('userid', ''),
+                        password=config_dict.get('password', ''),
+                        twsPath=config_dict.get('twsPath', ''),
+                        ibcPath=config_dict.get('ibcPath', ''),
+                        ibcIni=config_dict.get('ibcIni', '')
+                    )
+                    
+                    self._watchdog = Watchdog(
+                        ibc, self._ib,
+                        port=port,
+                        clientId=client_id,
+                        connectTimeout=10,
+                        appStartupTime=30
+                    )
+                    
+                    self._watchdog.start()
+                    
+                    # Wait for connection to establish
+                    timeout = 60
+                    elapsed = 0
+                    while not self._ib.isConnected() and elapsed < timeout:
+                        await asyncio.sleep(1)
+                        elapsed += 1
+                        
+                    if not self._ib.isConnected():
+                        raise Exception("Watchdog failed to connect within timeout")
+                else:
+                    await self._ib.connectAsync(host, port, clientId=client_id)
+                
                 self._connected = True
                 self._host = host
                 self._port = port
@@ -76,6 +118,9 @@ class IBConnectionManager:
             except Exception as e:
                 self._logger.error(f"Failed to connect to IB: {e}", exc_info=True)
                 self._connected = False
+                if self._watchdog:
+                    self._watchdog.stop()
+                    self._watchdog = None
                 self._ib = None
                 raise
     
@@ -110,6 +155,11 @@ class IBConnectionManager:
         Should only be called during framework shutdown.
         """
         async with self._connection_lock:
+            if self._watchdog:
+                self._logger.info("Stopping Watchdog")
+                self._watchdog.stop()
+                self._watchdog = None
+                
             if self._ib and self._ib.isConnected():
                 self._logger.info("Disconnecting shared IB connection")
                 

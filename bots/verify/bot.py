@@ -224,7 +224,8 @@ class Bot(BotBase):
         self.logger.info("Getting shared IB connection")
         
         try:
-            self.ib = await self.ib_connection_manager.connect(host, port, client_id)
+            ibc_config = self.system_config.get("ibc")
+            self.ib = await self.ib_connection_manager.connect(host, port, client_id, ibc_config)
             print(f"[{self.bot_id}] Using shared IB connection")
             self.logger.info("Using shared IB connection")
         except Exception as e:

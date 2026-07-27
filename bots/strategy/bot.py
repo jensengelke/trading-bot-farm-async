@@ -113,7 +113,8 @@ class Bot(BotBase):
         
         # Get shared IB connection
         try:
-            self.ib = await self.ib_connection_manager.connect(host, port, client_id)
+            ibc_config = self.system_config.get("ibc")
+            self.ib = await self.ib_connection_manager.connect(host, port, client_id, ibc_config)
             self.logger.info("Using shared IB connection")
             # Note: Error handling is now automatic via the framework's error dispatcher
         except Exception as e:

@@ -23,11 +23,25 @@ class DatabaseConfig(BaseModel):
     path: str = Field(..., description="Path to SQLite database file (relative or absolute)")
 
 
+class IbcConfig(BaseModel):
+    """IBC configuration for Watchdog and Gateway automatic restart."""
+    enabled: bool = Field(default=False, description="Whether IBC and Watchdog are enabled")
+    twsVersion: int = Field(default=985, description="TWS/Gateway version")
+    gateway: bool = Field(default=True, description="True for Gateway, False for TWS")
+    tradingMode: str = Field(default='paper', description="'paper' or 'live'")
+    userid: str = Field(default="", description="IB username")
+    password: str = Field(default="", description="IB password")
+    twsPath: Optional[str] = Field(default=None, description="Path to TWS installation directory")
+    ibcPath: Optional[str] = Field(default=None, description="Path to IBC installation directory")
+    ibcIni: Optional[str] = Field(default=None, description="Path to IBC config file")
+
+
 class ConfigModel(BaseModel):
     """Pydantic model for validating merged configuration."""
     connection: ConnectionConfig
     flex: FlexConfig
     database: DatabaseConfig
+    ibc: Optional[IbcConfig] = Field(default_factory=IbcConfig)
     
     class Config:
         extra = "forbid"

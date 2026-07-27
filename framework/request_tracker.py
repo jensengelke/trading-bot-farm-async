@@ -22,7 +22,18 @@ class RequestTracker:
         """Initialize the request tracker."""
         self._request_map: Dict[int, str] = {}  # reqId -> bot_id
         self._lock = Lock()
-        self._logger = logging.getLogger("system")
+        # Initialize logger later to ensure logging is configured
+        self._logger = None
+        
+    @property
+    def logger(self):
+        if self._logger is None:
+            from framework.logging_config import get_system_logger
+            try:
+                self._logger = get_system_logger()
+            except RuntimeError:
+                self._logger = logging.getLogger("system")
+        return self._logger
     
     def register_request(self, req_id: int, bot_id: str) -> None:
         """
@@ -34,7 +45,7 @@ class RequestTracker:
         """
         with self._lock:
             self._request_map[req_id] = bot_id
-            self._logger.debug(f"Registered reqId={req_id} for bot={bot_id}")
+            self.logger.debug(f"Registered reqId={req_id} for bot={bot_id}")
     
     def get_bot_for_request(self, req_id: int) -> Optional[str]:
         """
@@ -59,7 +70,7 @@ class RequestTracker:
         with self._lock:
             if req_id in self._request_map:
                 bot_id = self._request_map.pop(req_id)
-                self._logger.debug(f"Unregistered reqId={req_id} from bot={bot_id}")
+                self.logger.debug(f"Unregistered reqId={req_id} from bot={bot_id}")
     
     def clear_bot_requests(self, bot_id: str) -> None:
         """
@@ -73,7 +84,7 @@ class RequestTracker:
             for req_id in req_ids_to_remove:
                 del self._request_map[req_id]
             if req_ids_to_remove:
-                self._logger.debug(f"Cleared {len(req_ids_to_remove)} requests for bot={bot_id}")
+                self.logger.debug(f"Cleared {len(req_ids_to_remove)} requests for bot={bot_id}")
     
     def get_stats(self) -> Dict[str, int]:
         """
@@ -105,7 +116,17 @@ class ErrorDispatcher:
         self._request_tracker = request_tracker
         self._bot_error_handlers: Dict[str, Callable] = {}  # bot_id -> error_handler
         self._lock = Lock()
-        self._logger = logging.getLogger("system")
+        self._logger = None
+        
+    @property
+    def logger(self):
+        if self._logger is None:
+            from framework.logging_config import get_system_logger
+            try:
+                self._logger = get_system_logger()
+            except RuntimeError:
+                self._logger = logging.getLogger("system")
+        return self._logger
     
     def register_bot_handler(self, bot_id: str, error_handler: Callable) -> None:
         """
@@ -117,7 +138,7 @@ class ErrorDispatcher:
         """
         with self._lock:
             self._bot_error_handlers[bot_id] = error_handler
-            self._logger.debug(f"Registered error handler for bot={bot_id}")
+            self.logger.debug(f"Registered error handler for bot={bot_id}")
     
     def unregister_bot_handler(self, bot_id: str) -> None:
         """
@@ -129,7 +150,7 @@ class ErrorDispatcher:
         with self._lock:
             if bot_id in self._bot_error_handlers:
                 del self._bot_error_handlers[bot_id]
-                self._logger.debug(f"Unregistered error handler for bot={bot_id}")
+                self.logger.debug(f"Unregistered error handler for bot={bot_id}")
     
     def dispatch_error(self, req_id: int, error_code: int, error_string: str, contract) -> None:
         """
@@ -152,21 +173,21 @@ class ErrorDispatcher:
             if handler:
                 try:
                     handler(req_id, error_code, error_string, contract)
-                    self._logger.debug(f"Dispatched error reqId={req_id} to bot={bot_id}")
+                    self.logger.debug(f"Dispatched error reqId={req_id} to bot={bot_id}")
                 except Exception as e:
-                    self._logger.error(f"Error in bot error handler for {bot_id}: {e}", exc_info=True)
+                    self.logger.error(f"Error in bot error handler for {bot_id}: {e}", exc_info=True)
             else:
-                self._logger.warning(f"No error handler registered for bot={bot_id} (reqId={req_id})")
+                self.logger.warning(f"No error handler registered for bot={bot_id} (reqId={req_id})")
         else:
             # Request ID not tracked - this might be a system-level error or order-related
             # Log to system logger
             if contract:
-                self._logger.warning(
+                self.logger.warning(
                     f"IB Error [reqId={req_id}, code={error_code}]: {error_string} | "
                     f"Contract: {contract} (no bot association)"
                 )
             else:
-                self._logger.warning(
+                self.logger.warning(
                     f"IB Error [reqId={req_id}, code={error_code}]: {error_string} (no bot association)"
                 )
 
