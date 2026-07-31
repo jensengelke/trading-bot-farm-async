@@ -55,8 +55,8 @@ num_contracts: 1
 
 # Pricing configuration
 mid_price_monitoring_period: 10  # seconds
-min_premium: 1.3  # Minimum premium of $1.30
-max_premium: null  # No maximum
+#min_premium: 1.3  
+max_premium: -1.30  # Minimum credit of $1.30
 max_price_adjustments: 2
 
 # Bracket orders (optional)
