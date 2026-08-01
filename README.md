@@ -5,6 +5,9 @@
 1. Python 3.12
 1. This README assumes running on a Windows machine, with IB's API installed in `c:\twsapi-latest\source\pythonclient`. Update requirements.txt if your installation is in a different location.
 
+### Optional: IBC
+https://github.com/IbcAlpha/IBC extracted to c:\ibc
+
 ### Create a virtual environment
 ```bash
 python -m venv venv

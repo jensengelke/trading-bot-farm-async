@@ -8,7 +8,7 @@ import asyncio
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from ib_async import IB, Index, Stock, Option, Contract, Order, Trade, ComboLeg
-from ib_async.order import LimitOrder, StopOrder, MarketOrder
+from ib_async.order import LimitOrder, StopOrder, MarketOrder, OrderStatus
 from framework.bot_base import BotBase
 from framework.decorators import trace_all_methods
 from framework.option_utils import find_option_by_delta
@@ -885,7 +885,9 @@ class Bot(BotBase):
                 await asyncio.sleep(wait_seconds)
                 
                 # Check order status
-                if trade.orderStatus.status in ["Filled", "Cancelled"]:
+                if trade.orderStatus.status in OrderStatus.DoneStates:
+                    if trade.orderStatus.status != "Filled":
+                        self.logger.warning(f"Order is in terminal state '{trade.orderStatus.status}', aborting adjustments.")
                     break
                 
                 # If not filled and we can still adjust, adjust price by minTick

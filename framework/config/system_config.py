@@ -34,6 +34,10 @@ class IbcConfig(BaseModel):
     twsPath: Optional[str] = Field(default=None, description="Path to TWS installation directory")
     ibcPath: Optional[str] = Field(default=None, description="Path to IBC installation directory")
     ibcIni: Optional[str] = Field(default=None, description="Path to IBC config file")
+    trading_days: list[str] = Field(default=["Mon", "Tue", "Wed", "Thu", "Fri"], description="Days of the week to maintain connection")
+    maintain_connection_from: str = Field(default="08:00", description="Time to start maintaining connection (HH:MM)")
+    maintain_connection_until: str = Field(default="17:00", description="Time to stop maintaining connection (HH:MM)")
+    maintain_connection_timezone: str = Field(default="America/New_York", description="Timezone for connection maintenance times")
 
 
 class ConfigModel(BaseModel):

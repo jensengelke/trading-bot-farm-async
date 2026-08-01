@@ -46,6 +46,9 @@ class LoggingConfig:
         # Configure system logger
         self.system_logger = self._create_logger("system")
         
+        # Configure ib_async logger to also output to system logs
+        self._configure_ib_async_logger()
+        
         # Track bot loggers
         self.bot_loggers = {}
     
@@ -89,6 +92,21 @@ class LoggingConfig:
         
         print(f"Rotated {len(log_files)} log file(s) to {self.backup_dir}")
     
+    def _configure_ib_async_logger(self) -> None:
+        """
+        Configure the ib_async logger to output to the system trace and error logs.
+        """
+        ib_logger = logging.getLogger("ib_async")
+        ib_logger.setLevel(logging.DEBUG)
+        
+        # Don't duplicate logs to root
+        ib_logger.propagate = False
+        
+        # We reuse the system logger's handlers
+        ib_logger.handlers.clear()
+        for handler in self.system_logger.handlers:
+            ib_logger.addHandler(handler)
+
     def _create_logger(self, name: str) -> logging.Logger:
         """
         Create a logger with three handlers (error, info, trace).

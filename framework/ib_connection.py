@@ -12,6 +12,8 @@ from framework.request_tracker import get_error_dispatcher
 
 
 from ib_async import IBC, Watchdog
+from datetime import datetime
+import pytz
 
 class IBConnectionManager:
     """
@@ -32,6 +34,8 @@ class IBConnectionManager:
         self._logger = logging.getLogger("system")
         self._error_dispatcher = get_error_dispatcher()
         self._error_handler_registered = False
+        self._maintenance_task: Optional[asyncio.Task] = None
+        self._ibc_config = None
     
     async def connect(self, host: str, port: int, client_id: int, ibc_config=None) -> IB:
         """
@@ -88,17 +92,26 @@ class IBConnectionManager:
                         appStartupTime=30
                     )
                     
-                    self._watchdog.start()
+                    self._ibc_config = config_dict
                     
-                    # Wait for connection to establish
-                    timeout = 60
-                    elapsed = 0
-                    while not self._ib.isConnected() and elapsed < timeout:
-                        await asyncio.sleep(1)
-                        elapsed += 1
+                    # Instead of just starting, we check if we're in the window
+                    if self._is_in_maintenance_window():
+                        self._watchdog.start()
                         
-                    if not self._ib.isConnected():
-                        raise Exception("Watchdog failed to connect within timeout")
+                        # Wait for connection to establish
+                        timeout = 60
+                        elapsed = 0
+                        while not self._ib.isConnected() and elapsed < timeout:
+                            await asyncio.sleep(1)
+                            elapsed += 1
+                            
+                        if not self._ib.isConnected():
+                            raise Exception("Watchdog failed to connect within timeout")
+                    else:
+                        self._logger.info("Outside of connection maintenance window. Connection will be established when window opens.")
+                        
+                    if not self._maintenance_task:
+                        self._maintenance_task = asyncio.create_task(self._connection_maintenance_loop())
                 else:
                     await self._ib.connectAsync(host, port, clientId=client_id)
                 
@@ -172,6 +185,64 @@ class IBConnectionManager:
                 self._connected = False
                 self._logger.info("Disconnected from IB")
     
+    def _is_in_maintenance_window(self) -> bool:
+        if not self._ibc_config:
+            return True
+            
+        trading_days = self._ibc_config.get('trading_days', ["Mon", "Tue", "Wed", "Thu", "Fri"])
+        from_time = self._ibc_config.get('maintain_connection_from', "08:00")
+        until_time = self._ibc_config.get('maintain_connection_until', "17:00")
+        tz_str = self._ibc_config.get('maintain_connection_timezone', "America/New_York")
+        
+        try:
+            tz = pytz.timezone(tz_str)
+            now = datetime.now(tz)
+            
+            # Check day
+            day_map = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
+            current_day = day_map[now.weekday()]
+            if current_day not in trading_days:
+                return False
+                
+            # Check time
+            current_time = now.time()
+            from_h, from_m = map(int, from_time.split(':'))
+            until_h, until_m = map(int, until_time.split(':'))
+            
+            from_t = datetime.strptime(from_time, "%H:%M").time()
+            until_t = datetime.strptime(until_time, "%H:%M").time()
+            
+            return from_t <= current_time <= until_t
+        except Exception as e:
+            self._logger.error(f"Error checking maintenance window: {e}")
+            return True
+
+    async def _connection_maintenance_loop(self) -> None:
+        while True:
+            try:
+                await asyncio.sleep(60) # Check every minute
+                if not self._watchdog:
+                    break
+                    
+                in_window = self._is_in_maintenance_window()
+                
+                if in_window:
+                    if not self._ib.isConnected():
+                        self._logger.info("In maintenance window but not connected. Starting watchdog...")
+                        try:
+                            self._watchdog.start()
+                        except Exception as e:
+                            self._logger.debug(f"Watchdog might already be running: {e}")
+                else:
+                    if self._ib.isConnected():
+                        self._logger.info("Outside maintenance window, stopping watchdog and disconnecting.")
+                        self._watchdog.stop()
+                        self._ib.disconnect()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self._logger.error(f"Error in connection maintenance loop: {e}")
+
     def is_connected(self) -> bool:
         """
         Check if the connection is active.
