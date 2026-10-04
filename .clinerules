@@ -1,0 +1,4 @@
+# Instructions for Cline
+- This project uses a Memory Bank located in the `memory-bank/` directory.
+- At the start of every task, read ALL files in `memory-bank/` to understand project context.
+- Update the memory bank files (especially `activeContext.md` and `progress.md`) as work progresses or when significant decisions are made.
