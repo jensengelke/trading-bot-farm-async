@@ -98,15 +98,15 @@ class IBConnectionManager:
                     if self._is_in_maintenance_window():
                         self._watchdog.start()
                         
-                        # Wait for connection to establish
-                        timeout = 60
+                        # Wait for connection to establish (increased timeout for 2FA)
+                        timeout = 300
                         elapsed = 0
                         while not self._ib.isConnected() and elapsed < timeout:
                             await asyncio.sleep(1)
                             elapsed += 1
                             
                         if not self._ib.isConnected():
-                            raise Exception("Watchdog failed to connect within timeout")
+                            raise Exception(f"Watchdog failed to connect within {timeout} seconds timeout")
                     else:
                         self._logger.info("Outside of connection maintenance window. Connection will be established when window opens.")
                         
@@ -226,18 +226,27 @@ class IBConnectionManager:
                     
                 in_window = self._is_in_maintenance_window()
                 
-                if in_window:
-                    if not self._ib.isConnected():
-                        self._logger.info("In maintenance window but not connected. Starting watchdog...")
-                        try:
-                            self._watchdog.start()
-                        except Exception as e:
-                            self._logger.debug(f"Watchdog might already be running: {e}")
-                else:
-                    if self._ib.isConnected():
-                        self._logger.info("Outside maintenance window, stopping watchdog and disconnecting.")
+                # Track window state to only start/stop on transitions
+                if not hasattr(self, '_was_in_window'):
+                    self._was_in_window = True
+
+                if in_window and not self._was_in_window:
+                    self._logger.info("Entering maintenance window. Starting watchdog...")
+                    try:
+                        self._watchdog.start()
+                    except Exception as e:
+                        self._logger.error(f"Error starting watchdog: {e}")
+                elif not in_window and self._was_in_window:
+                    self._logger.info("Exiting maintenance window. Stopping watchdog...")
+                    try:
                         self._watchdog.stop()
+                    except Exception as e:
+                        self._logger.error(f"Error stopping watchdog: {e}")
+                    
+                    if self._ib.isConnected():
                         self._ib.disconnect()
+
+                self._was_in_window = in_window
             except asyncio.CancelledError:
                 break
             except Exception as e:
