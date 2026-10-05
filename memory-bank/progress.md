@@ -2,151 +2,124 @@
 
 ## What Works
 
-### Core Framework ✅
-- **Bot Manager**: Discovers, instantiates, and manages bot lifecycle
-- **Bot Base**: Abstract base class providing common bot infrastructure
-- **Dynamic Loading**: Bots are loaded dynamically based on configuration
-- **Async Execution**: All bots run concurrently using asyncio
-- **Graceful Shutdown**: Signal handlers ensure clean shutdown of all bots
+### Core Framework & Lifecycle ✅
+- **Bot Manager**: Discovers, instantiates, and manages bot lifecycle via async tasks.
+- **Bot Base**: Standardized lifecycle contract (`start()`, `stop()`, `cleanup()`) with dependency-injected connection manager, logger, and configuration.
+- **Dynamic Loading**: Dynamically imports bot classes based on YAML `type` parameter using `importlib.util`.
+- **Async Execution**: Concurrent execution of all bots in a single event loop with error isolation.
+- **Graceful Shutdown**: Signal handling (SIGINT/SIGTERM) cancels chase orders, preserves bracket orders, and disconnects shared connections cleanly.
 
-### Configuration System ✅
-- **Two-tier Configuration**: Public and secret config files merge seamlessly
-- **Pydantic Validation**: Type-safe configuration with validation at startup
-- **Instance-based**: Multiple environments (live, paper) can run independently
-- **Dot Notation Access**: Easy nested configuration access via `config.get("section.field")`
+### Singleton IB Connection & Gateway Supervision ✅
+- **Shared Connection Pooling (`IBConnectionManager`)**: Thread-safe singleton (`asyncio.Lock`) sharing a single IB socket and client ID across all bots, preventing client ID collision errors.
+- **IBC & Watchdog Integration**: Automated headless IB Gateway/TWS lifecycle management, including automated logins and restarts.
+- **Maintenance Windows**: Timezone-aware connection scheduler (`America/New_York`) that starts/stops Watchdog and disconnects during off-hours (`maintain_connection_from` to `maintain_connection_until` on specified `trading_days`).
+
+### Targeted Error Dispatching ✅
+- **Request Tracking (`RequestTracker`)**: Thread-safe mapping of IB API request IDs (`reqId`) to originating bot instances.
+- **Targeted Error Dispatcher (`ErrorDispatcher`)**: Routes IB `errorEvent` callbacks exclusively to the bot that initiated the request, eliminating log pollution and duplicate warnings across bots sharing a socket.
+- **System Fallback**: Untracked requests and global connection errors route cleanly to the system logger.
+
+### Virtual Position Persistence ✅
+- **SQLite State Management (`PositionManager`, `VirtualPosition`)**: Dedicated instance database (`data/{instance}_positions.db`) tracking position ID, bot ID, status, underlying, expiration, leg details, fill prices/times, bracket order IDs, and initial Greeks.
+- **Netting Decoupling**: Solves the broker netting dilemma where overlapping strikes in multi-leg spreads cancel out in IB's net portfolio, preserving independent strategy identity and exit rules.
+- **Database Inspection CLI (`show_db.py`)**: Utility for displaying database table schemas and row contents.
+
+### Option Strategy Engine (`bots/strategy/`) ✅
+- **Configurable Multi-Leg Execution**: Supports complex structures (Butterflies, Iron Condors, Bull Put Spreads, asymmetric spreads).
+- **Target DTE & Expiration Selection**: Matches target DTE exactly or searches for closest expiration.
+- **Trading Class Disambiguation**: Resolves `SPXW` weekly vs `SPX` standard monthly index options.
+- **Delta-Based Strike Search (`framework/option_utils.py`)**: `find_option_by_delta` queries IB Greeks in batches with fallback search in alternate (ITM) directions.
+- **Execution Algorithm**: Samples mid-prices over `mid_price_monitoring_period`, submits limit combo orders (`BAG`), and iteratively adjusts prices by `min_tick` towards fill (`max_price_adjustments`) within `min_premium` and `max_premium` limits.
+- **Bracket Risk Management**: Places GTC Stop Loss and Take Profit combo orders with `outsideRth=True`.
+
+### Condition Evaluators ✅
+- **Entry Conditions (`EntryConditionEvaluator`)**: Short-circuits trade entry if market filters fail (`SMA`, `underlying_intraday_move`, `VIX`).
+- **Exit Conditions (`ExitConditionEvaluator`)**: Evaluates open position Greeks via `calculate_position_greeks` and triggers closure on `position_delta` drift.
+
+### Connectivity Verification Bot (`bots/verify/`) ✅
+- Multi-asset connectivity testing for stocks, options, and futures.
+- Dynamic contract resolution and 1-minute historical bar verification.
+
+### Configuration System & Environments ✅
+- **Environment Isolation**: Configured for `live`, `demo`, and `test-live` environments.
+- **Two-Tier Merging**: Merges public `config.yaml` with sensitive `.secret-config.yaml`.
+- **Pydantic Validation**: Strict schemas (`ConfigModel`, `ConnectionConfig`, `FlexConfig`, `DatabaseConfig`, `IbcConfig`, `StrategyBotConfig`, `VerifyBotConfig`).
 
 ### Logging Infrastructure ✅
-- **Three-tier Logging**: Standard (INFO+), Error (WARNING+), Trace (DEBUG+)
-- **Instance-specific**: Each configuration instance has its own log directory
-- **Automatic Rotation**: Previous logs backed up on each startup
-- **Method Tracing**: `@trace_all_methods` decorator for automatic debugging
-- **UTF-8 Encoding**: Proper character handling in all log files
-
-### Bot Implementation ✅
-- **Verify Bot**: Example bot that tests IB connection and retrieves historical data
-- **Simple Interface**: Bots only need to implement `start()` and `stop()` methods
-- **Rich Context**: Bots receive configuration, system config, and pre-configured logger
-
-### Documentation ✅
-- **Framework Documentation**: Comprehensive guide to framework architecture
-- **Bot Implementation Guide**: Step-by-step guide for creating new bots
-- **Memory Bank**: Complete initialization with all core documentation files
-- **README**: Setup and configuration instructions
+- Three-tier logs (`*.log`, `*-error.log`, `*-trace.log`) for system and each bot.
+- Automatic startup log rotation into timestamped backup folders (`backup-YYYYMMDD_HHMMSS/`).
+- Method-level tracing decorator (`@trace_all_methods`).
 
 ## What's Left to Build
 
-### Testing Infrastructure 🔲
-- **Unit Tests**: Test individual framework components
-- **Integration Tests**: Test bot lifecycle and configuration loading
-- **Mock IB Connection**: Test bots without requiring IB Gateway/TWS
-- **CI/CD Pipeline**: Automated testing on code changes
+### 1. State Reconciliation Engine 🔲
+- **Broker Net Reconciliation**: Periodically compare SQLite virtual positions against IB net portfolio positions (`reqPositions`).
+- **Manual Intervention Detection**: If a position was closed or modified manually in TWS, mark the virtual position as closed and automatically cancel orphaned Take Profit / Stop Loss bracket orders.
+- **Position Discrepancy Alerts**: Log warning when local virtual legs differ from broker net balances.
 
-### Additional Bot Types 🔲
-- **Trading Bots**: Implement actual trading strategies
-- **Data Collection Bots**: Collect and store market data
-- **Monitoring Bots**: Monitor positions and send alerts
-- **Reporting Bots**: Generate trading reports and analytics
+### 2. Automated Testing Suite 🔲
+- **Unit Tests**: Test `PositionManager`, `RequestTracker`, `ErrorDispatcher`, `EntryConditionEvaluator`, and Pydantic models.
+- **Mock IB Connection**: Mock `ib_async` objects (`IB`, `Contract`, `Ticker`, `Trade`) to run automated tests without IB Gateway.
+- **Integration Tests**: Verify end-to-end bot lifecycle, scheduling, price chase adjustments, and shutdown sequences.
 
-### Enhanced Features 🔲
-- **Connection Pooling**: Share IB connection across multiple bots
-- **Bot Scheduling**: Cron-based scheduling for periodic bot execution
-- **Health Monitoring**: Health check endpoints for operational monitoring
-- **Configuration Hot Reload**: Reload configuration without restarting framework
-- **Web Dashboard**: Web interface for monitoring and controlling bots
+### 3. Operational Alerts & Notifications 🔲
+- **Real-Time Webhook/Alerts**: Push notifications (Telegram, Discord, Slack, or Email) on order fills, price adjustments, bracket triggers, and critical errors.
+- **Daily Performance Reports**: Summary reports comparing opening premium vs exit fills using Flex queries.
 
-### Error Handling Improvements 🔲
-- **Retry Logic**: Automatic retry for transient failures
-- **Circuit Breaker**: Prevent cascade failures
-- **Dead Letter Queue**: Store failed operations for later analysis
-- **Alert System**: Send notifications on critical errors
-
-### Performance Optimizations 🔲
-- **Connection Reuse**: Optimize IB connection usage
-- **Batch Operations**: Group similar operations for efficiency
-- **Caching**: Cache frequently accessed data
-- **Resource Limits**: Prevent resource exhaustion
+### 4. Advanced Trading Features 🔲
+- **Multi-Entry Butterflies**: Scale into positions over multiple entry windows.
+- **Dynamic Adjustments**: Rolling legs or delta-hedging positions when exit condition thresholds are approached.
+- **Web Dashboard**: Read-only browser UI to visualize open virtual positions and log streams.
 
 ## Current Status
 
 ### Phase 1: Foundation (Complete) ✅
-- [x] Core framework implementation
-- [x] Configuration system with validation
-- [x] Logging infrastructure
-- [x] Bot base class and lifecycle management
-- [x] Example bot (verify)
-- [x] Documentation
-- [x] Memory bank initialization
+- [x] Core framework implementation & dynamic bot loading
+- [x] Two-tier configuration system with Pydantic validation
+- [x] Three-tier logging infrastructure with startup backup rotation
+- [x] Verification bot (`verify`) for multi-asset testing
 
-### Phase 2: Enhancement (Not Started) 🔲
-- [ ] Automated testing
-- [ ] Additional bot types
-- [ ] Connection pooling
-- [ ] Bot scheduling
-- [ ] Health monitoring
+### Phase 2: Option Strategy Engine & Connection Pooling (Complete) ✅
+- [x] Multi-leg option spread strategy engine (`bots/strategy/`)
+- [x] Singleton `IBConnectionManager` with asyncio thread-safe pooling
+- [x] Delta-based strike selection (`find_option_by_delta`) with ITM alternate search
+- [x] Mid-price monitoring and iterative tick chase algorithm
+- [x] GTC bracket order submission (`StopOrder` & `LimitOrder` outside RTH)
+- [x] Scheduled cycle execution loops (`entry_days`, `entry_times`, pytz)
 
-### Phase 3: Production Readiness (Not Started) 🔲
-- [ ] Error handling improvements
-- [ ] Performance optimizations
-- [ ] Web dashboard
-- [ ] Alert system
-- [ ] Deployment automation
+### Phase 3: Production Hardening & Persistence (Complete) ✅
+- [x] Headless IBC and `Watchdog` automation with scheduled maintenance windows
+- [x] Targeted error dispatching (`RequestTracker` and `ErrorDispatcher`)
+- [x] SQLite virtual position tracking (`PositionManager`, `VirtualPosition`)
+- [x] Database inspection CLI tool (`show_db.py`)
+- [x] Condition evaluators (Entry: `SMA`, `underlying_intraday_move`, `VIX`; Exit: `position_delta`)
+- [x] Clean shutdown logic preserving bracket orders while cancelling in-flight orders
 
-## Known Issues
+### Phase 4: State Reconciliation & Test Suite (Active) 🔲
+- [ ] Active portfolio reconciliation loop against broker positions
+- [ ] Automated unit and mock testing suite
+- [ ] Real-time notification webhooks
 
-### Current Issues
-- None reported at this time
+## Known Issues & Technical Debt
+
+### Known Limitations
+- **Manual Intervention Sync**: Closing or modifying legs manually inside TWS leaves orphaned bracket orders in IB; automated cancellation via reconciliation loop is not yet active.
+- **Illiquid Strike Mid-Prices**: In fast-moving or wide-spread market conditions, mid-price sampling may require longer monitoring periods or wider premium bounds.
 
 ### Technical Debt
-- **IB Connection**: Each bot creates its own connection; consider connection pooling
-- **Error Recovery**: Limited retry logic for transient failures
-- **Testing**: No automated tests yet
-- **Monitoring**: No health check endpoints
-
-## Evolution of Project Decisions
-
-### Initial Design Decisions
-1. **Async-first**: Chose asyncio for efficient concurrent bot execution
-2. **Convention-based**: Bots discovered automatically based on file structure
-3. **Instance isolation**: Multiple environments can run independently
-4. **Two-tier config**: Separate public and secret configuration files
-5. **Three-tier logging**: Different log levels for different use cases
-
-### Decisions That Worked Well
-- **Dynamic bot loading**: Makes adding new bot types trivial
-- **Pydantic validation**: Catches configuration errors early
-- **Instance-based configuration**: Enables multiple environments easily
-- **Method tracing decorator**: Invaluable for debugging
-
-### Decisions Under Review
-- **Per-bot IB connection**: May need connection pooling for efficiency
-- **No automated testing**: Should add tests before expanding functionality
-- **Manual monitoring**: Could benefit from health check endpoints
-
-### Future Considerations
-- **Scalability**: How to handle dozens of bots efficiently
-- **Reliability**: Improve error handling and recovery
-- **Observability**: Add metrics and monitoring
-- **Deployment**: Automate deployment and configuration management
+- **Automated Test Coverage**: Core components have been validated via live and demo runs, but lack a formal unit test suite with mocked IB network responses.
+- **Order Tracking in SQLite**: While opening order fills and bracket order IDs are stored, bracket order execution fills are not yet automatically updated to `status = 'CLOSED'` via execution callbacks.
 
 ## Milestones
 
-### Milestone 1: MVP (Completed) ✅
-- Core framework operational
-- Configuration system working
-- Logging infrastructure in place
-- Example bot implemented
-- Documentation complete
+### Milestone 1: MVP Foundation (Completed) ✅
+- Core framework operational, dynamic loading, multi-tier logging.
 
-### Milestone 2: Production Ready (Future)
-- Automated testing in place
-- Error handling improved
-- Performance optimized
-- Monitoring and alerting
-- Multiple bot types implemented
+### Milestone 2: Strategy Engine & Connection Pooling (Completed) ✅
+- Shared IB connection singleton, multi-leg combo execution, delta strike selection, mid-price chasing.
 
-### Milestone 3: Scale (Future)
-- Connection pooling
-- Bot scheduling
-- Web dashboard
-- Advanced monitoring
-- Deployment automation
+### Milestone 3: Production Hardening (Completed) ✅
+- IBC/Watchdog scheduled maintenance, targeted error routing, SQLite virtual position persistence, entry/exit condition engines.
+
+### Milestone 4: Portfolio Reconciliation & Testing (Next)
+- Real-time reconciliation loop for manual TWS trades, automated test suite, external webhook alerting.

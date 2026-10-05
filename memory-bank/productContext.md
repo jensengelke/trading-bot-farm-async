@@ -2,58 +2,78 @@
 
 ## Why This Project Exists
 
-The Trading Bot Farm framework was created to solve the challenge of running multiple trading strategies simultaneously while maintaining clean separation of concerns, shared infrastructure, and operational efficiency.
+The Trading Bot Farm framework was created to solve the challenges of running multiple automated options trading strategies concurrently on Interactive Brokers while maintaining strict separation of concerns, high execution quality, reliable persistence, and operational efficiency.
 
 ### Problems It Solves
 
-1. **Multi-Strategy Trading**: Enables traders to run multiple independent trading strategies (bots) concurrently without needing separate processes or infrastructure for each
-2. **Configuration Management**: Provides a structured approach to managing both system-wide and bot-specific configuration, with proper separation of sensitive data
-3. **Environment Isolation**: Supports multiple trading environments (paper trading, live trading, multiple accounts) through instance-based configuration
-4. **Observability**: Comprehensive logging infrastructure makes it easy to monitor, debug, and audit bot behavior
-5. **Resource Efficiency**: Bots share a single connection to Interactive Brokers and common runtime resources
+1. **Multi-Strategy Options Execution**: Running diverse option strategies (Butterflies, Iron Condors, Bull Put Spreads, custom multi-leg structures) simultaneously without spawning multiple Python processes or managing separate broker connections.
+2. **The Broker Net Portfolio Netting Dilemma**:
+   - Interactive Brokers consolidates positions at the contract level. If Strategy A sells two SPX 7520 Calls and Strategy B buys two SPX 7520 Calls, IBKR reports a net position of 0 contracts.
+   - At the broker level, individual strategy identity, entry fills, and profit targets are erased.
+   - The framework solves this by decoupling strategy state into an internal SQLite database (`PositionManager` / `VirtualPosition`), preserving strategy leg definitions, initial Greeks, fill prices, and bracket orders independently of broker netting.
+3. **Execution Quality in Illiquid Option Combos**:
+   - Market orders on multi-leg option spreads suffer massive slippage across wide bid-ask spreads.
+   - The framework samples mid-prices across all combo legs over a configurable monitoring window (`mid_price_monitoring_period`) to establish fair value, then enters limit orders with dynamic price adjustments (`max_price_adjustments`), stepping by minimum tick increments (`min_tick`) towards execution without crossing into adverse premium territory (`min_premium`, `max_premium`).
+4. **Targeted Observability on Shared Sockets**:
+   - On a shared IB connection, standard IB API error callbacks broadcast to every listening client.
+   - The framework maps request IDs (`reqId`) to originating bots via `RequestTracker` and routes errors via `ErrorDispatcher`, eliminating duplicate log noise and keeping strategy logs clean and isolated.
+5. **Headless 24/5 Gateway Lifecycle**:
+   - Interactive Brokers TWS/Gateway requires daily maintenance reboots and session refreshes.
+   - IBC and `Watchdog` integration automates login, restarts, and connection windows during market hours (`America/New_York`), allowing completely unattended server deployments.
+6. **Environment & Credential Isolation**:
+   - Separate configuration environments (`config/live`, `config/demo`, `config/test-live`) ensure zero cross-contamination between testing, demo simulations, and live capital.
+   - Two-tier YAML configurations keep sensitive passwords, account numbers, and Flex tokens gitignored.
 
 ## How It Should Work
 
 ### User Workflow
 
-1. **Setup**: User creates a configuration instance directory (e.g., `config/live/`)
-2. **System Configuration**: User configures connection settings in `config.yaml` and sensitive data in `.secret-config.yaml`
-3. **Bot Configuration**: User creates YAML files for each bot instance they want to run (e.g., `verify_stocks.yaml`)
-4. **Execution**: User starts the framework with `python trading_bot_farm.py --config config/live`
-5. **Operation**: Framework discovers all bot configurations, instantiates them, and runs them concurrently
-6. **Monitoring**: User monitors bot behavior through instance-specific log files
-7. **Shutdown**: User stops the framework (Ctrl+C), which gracefully shuts down all bots
+1. **Environment Setup**: User chooses an environment directory (`config/live/`, `config/demo/`, or `config/test-live/`).
+2. **System Configuration**:
+   - Technical settings in `config.yaml` (host, port, client_id, SQLite database path `data/{env}_positions.db`).
+   - Credentials in `.secret-config.yaml` (account ID, Flex Web service credentials, IBC credentials).
+3. **Bot Configuration**:
+   - User creates or modifies YAML files for each bot instance (e.g., `strategy_30DTE_butterfly.yaml`, `strategy_fkk.yaml`, `verify_options.yaml`).
+   - Strategy bots configure underlying contracts (e.g., SPX Index with SPXW weekly options), DTE, scheduled entry days and times, multi-leg structures, delta-based strikes, mid-price monitoring, and bracket orders.
+4. **Execution**:
+   - User starts the farm: `python trading_bot_farm.py --config config/live` (or `config/demo`).
+5. **Runtime Operation**:
+   - `BotManager` discovers all bot YAML files, initializes `IBConnectionManager`, and creates tasks.
+   - `IBConnectionManager` creates or connects to IB Gateway, optionally launching Watchdog/IBC if enabled.
+   - Bots calculate scheduled execution times in `America/New_York` timezone and sleep until triggers fire.
+   - At execution time, entry conditions (SMA, intraday move, VIX) are evaluated; if conditions pass, options strikes are resolved (via delta search or strike offsets) and qualified.
+   - Orders are placed as combo contracts (`BAG`), monitored, and iteratively adjusted towards fills.
+   - Upon execution, virtual positions are persisted in SQLite, and GTC bracket orders (Take Profit / Stop Loss) are placed with unique `orderRef` tags.
+   - Exit conditions (such as Greek delta thresholds) periodically monitor open virtual positions.
+6. **Position Inspection**:
+   - Operator inspects database state using `python show_db.py data/live_positions.db`.
+7. **Shutdown**:
+   - Operator issues SIGINT (Ctrl+C). The framework cancels active opening limit orders while preserving filled bracket orders (Take Profit / Stop Loss), closes SQLite connections, and disconnects the shared IB socket cleanly.
 
-### Key Behaviors
+### Key Operational Behaviors
 
-- **Automatic Discovery**: Framework automatically finds and loads all bot configurations in the specified instance directory
-- **Independent Operation**: Each bot runs independently with its own configuration and logging
-- **Shared Resources**: Bots share system configuration (IB connection settings, credentials)
-- **Graceful Lifecycle**: Framework manages clean startup and shutdown of all bots
-- **Error Isolation**: If one bot fails, others continue running (framework handles exceptions)
+- **Virtual Position Persistence**: Decouples active strategy trades from IB portfolio consolidation, enabling multiple overlapping spreads with independent profit-taking logic.
+- **Shared Connection Singleton**: All bots share a single TCP socket and client ID, preventing gateway reconnect churn.
+- **Targeted Error Dispatching**: `RequestTracker` captures `reqId` to ensure warnings/errors appear only in the log of the bot that originated the API call.
+- **Gateway Autonomous Maintenance**: IBC Watchdog supervises connection health during scheduled trading hours, reconnecting automatically across network drops or nightly maintenance windows.
+- **Fail-Safe Shutdown**: Bot stop preserves GTC bracket orders while cleaning up in-flight limit chase orders and unregistering error callbacks.
 
 ## User Experience Goals
 
-### For Bot Developers
-
-- **Simple Interface**: Implement just two methods (`start()` and `stop()`) to create a new bot
-- **Rich Context**: Bots receive their configuration, system configuration, and a pre-configured logger
-- **Easy Debugging**: Automatic method tracing and comprehensive logging make debugging straightforward
-- **Type Safety**: Pydantic validation catches configuration errors early
+### For Option Strategy Traders & Developers
+- **Modular Leg Definition**: Define multi-leg strategies cleanly in YAML with intuitive strike selection (`underlying_offset`, `leg_offset`, or `delta`).
+- **Rich Context & Abstraction**: Inherit from `BotBase`, access validated Pydantic models, query shared IB connections without socket handling, and utilize helper utilities (`find_option_by_delta`, `EntryConditionEvaluator`, `PositionManager`).
+- **Debugging Clarity**: Three-tier logging (`standard`, `error`, `trace`) combined with method tracing (`@trace_all_methods`) makes tracking asynchronous callbacks and order fills trivial.
 
 ### For Bot Operators
-
-- **Easy Configuration**: YAML-based configuration is human-readable and easy to modify
-- **Clear Logging**: Three-tier logging (standard, error, trace) provides appropriate detail for different needs
-- **Multiple Environments**: Run paper trading and live trading simultaneously on the same machine
-- **Audit Trail**: Log rotation preserves historical logs for analysis and compliance
+- **Declarative Configuration**: Update trading schedules, contract ratios, or profit factors in YAML without altering code.
+- **Multi-Environment Safety**: Distinct `live`, `demo`, and `test-live` directories prevent accidental live order placement.
+- **Auditability**: SQLite databases record every virtual position created, filled, or closed, inspectable anytime via `show_db.py`.
 
 ### For System Administrators
-
-- **Security**: Sensitive configuration is kept separate and never committed to version control
-- **Reliability**: Graceful shutdown ensures clean resource cleanup
-- **Monitoring**: Instance-specific logs make it easy to monitor multiple deployments
-- **Extensibility**: New bot types can be added without modifying the framework
+- **Unattended Execution**: Headless deployment with IBC and Watchdog handles connection maintenance windows and gateway reboots.
+- **Security First**: All passwords, accounts, and credentials live strictly in `.secret-config.yaml` (gitignored).
+- **Log Archiving**: Auto-rotation archives previous sessions into timestamped backups on startup.
 
 ## Design Philosophy
 
