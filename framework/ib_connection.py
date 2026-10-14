@@ -89,7 +89,7 @@ class IBConnectionManager:
                         port=port,
                         clientId=client_id,
                         connectTimeout=10,
-                        appStartupTime=30
+                        appStartupTime=120
                     )
                     
                     self._ibc_config = config_dict
