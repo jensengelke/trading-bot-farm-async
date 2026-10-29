@@ -24,6 +24,12 @@
 - **Netting Decoupling**: Solves the broker netting dilemma where overlapping strikes in multi-leg spreads cancel out in IB's net portfolio, preserving independent strategy identity and exit rules.
 - **Database Inspection CLI (`show_db.py`)**: Utility for displaying database table schemas and row contents.
 
+### Multi-Instance & Dedicated IB Gateway Architecture ✅
+- **Per-User / Per-Account Isolation**: Concurrently run separate farm processes for trading (`config/live` on port 4001, user `jensengelke-bot1`) and monitoring (`config/live-read` on port 4002, user `jensengelke-bot2`).
+- **Dedicated IBC Port Configurations**: Generated dedicated IBC configuration files (`config-live.ini` with `OverrideTwsApiPort=4001` and `config-live-read.ini` with `OverrideTwsApiPort=4002`), ensuring each gateway process binds strictly to its designated socket port.
+- **Auto-Detection & Path Resolution**: `SystemConfig` dynamically resolves relative `ibcIni` paths against the environment directory and automatically defaults to `ibc_config.ini` when present.
+- **Windows Command Line Mapping**: Patched `ib_async.ibcontroller.IBC` on Windows to correctly map `/TwsSettingsPath:`.
+
 ### Option Strategy Engine (`bots/strategy/`) ✅
 - **Configurable Multi-Leg Execution**: Supports complex structures (Butterflies, Iron Condors, Bull Put Spreads, asymmetric spreads).
 - **Target DTE & Expiration Selection**: Matches target DTE exactly or searches for closest expiration.
@@ -39,6 +45,15 @@
 ### Connectivity Verification Bot (`bots/verify/`) ✅
 - Multi-asset connectivity testing for stocks, options, and futures.
 - Dynamic contract resolution and 1-minute historical bar verification.
+
+
+### Telegram Notification Bot (`bots/telegram/`) ✅
+- **Real-Time Order Monitoring**: Hooks into shared IB socket callbacks (`openOrderEvent`, `orderStatusEvent`, `execDetailsEvent`).
+- **Startup Connected Readiness Signal**: Upon connection, gathers account balances (`NetLiquidation`, `TotalCashValue`, `AvailableFunds`, `BuyingPower`, margin), portfolio positions (quantity, cost basis, market price, unrealized P&L), and open orders, formatting a clean HTML overview dispatched to Telegram.
+- **Rich HTML Alerts**: Formats and sends emojis, contract descriptions (stocks, options, futures, combo spreads), prices, quantities, order references, and commissions.
+- **Two-Tier Secret Credentials**: Sensitive bot tokens and chat IDs stored in `.secret-config.yaml` and validated by `SystemConfig`.
+- **Asynchronous HTTP Client**: Non-blocking `TelegramClient` (`framework/telegram_client.py`) using `asyncio.to_thread` with standard library `urllib` and automatic message splitting.
+- **Debounced Updates**: Suppresses duplicate status changes and provides account and orderRef filtering.
 
 ### Configuration System & Environments ✅
 - **Environment Isolation**: Configured for `live`, `demo`, and `test-live` environments.
@@ -95,10 +110,10 @@
 - [x] Condition evaluators (Entry: `SMA`, `underlying_intraday_move`, `VIX`; Exit: `position_delta`)
 - [x] Clean shutdown logic preserving bracket orders while cancelling in-flight orders
 
-### Phase 4: State Reconciliation & Test Suite (Active) 🔲
+### Phase 4: State Reconciliation & Notifications (Active) 🔲
 - [ ] Active portfolio reconciliation loop against broker positions
-- [ ] Automated unit and mock testing suite
-- [ ] Real-time notification webhooks
+- [x] Automated unit and mock testing suite (added `tests/test_telegram_bot.py`)
+- [x] Real-time Telegram notifications (`bots/telegram/`)
 
 ## Known Issues & Technical Debt
 

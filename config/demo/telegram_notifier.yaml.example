@@ -1,0 +1,29 @@
+# Telegram Notification Bot Configuration
+# Rename this file to telegram_notifier.yaml to enable it in this environment.
+# Ensure that telegram credentials are configured in .secret-config.yaml.
+
+name: "Telegram Order Notifier"
+type: "telegram"
+connection: "default"     # References telegram.connections.default in .secret-config.yaml
+silent_startup: false     # Set to true to suppress the online greeting message
+
+# Phase 1: Real-time trading alerts
+notifications:
+  enabled: true
+  notify_on_placement: true        # Alert when new orders are placed (Limit, Stop, Combo)
+  notify_on_status_change: true    # Alert on status updates (Submitted, PreSubmitted, Inactive)
+  notify_on_cancellation: true     # Alert when orders are cancelled
+  notify_on_fill: true             # Alert on execution fills with prices and commissions
+  notify_on_price_adjustments: false # Suppress tick chase adjustments
+
+  # Optional filtering
+  filter_accounts: []              # Empty = all accounts; e.g. ["DU5761850"]
+  include_order_refs: []           # Empty = all; or filter specific bot prefixes
+  exclude_order_refs: []           # e.g. ["verify_*"] to ignore connectivity verify bots
+
+# Phase 2 (Future): Scheduled portfolio observations
+observations:
+  enabled: false
+  schedule: "0 9,15 * * 1-5"       # Cron expression (e.g., 9:00 AM and 3:00 PM EST)
+  timezone: "America/New_York"
+  rules: []

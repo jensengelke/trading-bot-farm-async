@@ -74,6 +74,8 @@ trading-bot-farm-async/
 │   ├── exit_conditions.py       # Exit condition evaluators (PositionDelta)
 │   ├── logging_config.py        # Three-tier logging infrastructure
 │   ├── decorators.py            # Utility decorators (@trace_all_methods)
+│   ├── telegram_client.py       # Asynchronous Telegram Bot API transport & HTML escaper
+
 │   └── config/
 │       ├── __init__.py
 │       └── system_config.py     # Two-tier YAML loader with Pydantic models
@@ -88,6 +90,12 @@ trading-bot-farm-async/
 │       ├── __init__.py
 │       ├── bot.py               # Verifies stocks, options, and futures data
 │       └── config.py            # Pydantic schema for verify bot
+│   └── telegram/                # Real-time Telegram notification bot
+│       ├── __init__.py
+│       ├── bot.py               # IB order event listener & alert dispatcher
+│       ├── config.py            # Pydantic schema for Telegram bot
+│       └── formatters.py        # HTML alert formatting templates
+
 │
 ├── config/                      # Configuration instances
 │   ├── demo/                    # Demo / paper trading environment
@@ -116,6 +124,8 @@ trading-bot-farm-async/
 │   ├── bot_implementation_guide.md
 │   ├── butterfly.md             # Flexible butterfly strategy documentation
 │   ├── entry_conditions.md       # Entry condition evaluator documentation
+│   ├── telegram_bot.md          # Telegram notification bot setup & alert format guide
+
 │   ├── request_tracking.md       # Targeted error routing documentation
 │   ├── shared_connection.md      # Singleton connection pooling guide
 │   └── todo_virtual_positions.md # Analysis of broker netting vs virtual positions

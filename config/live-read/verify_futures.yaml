@@ -1,0 +1,12 @@
+type: verify
+security_type: future
+symbols:
+  - ticker: MNQ
+    exchange: CME
+    currency: USD
+    # Futures-specific parameters
+    # expiration: will use current month's future if not specified
+  - ticker: MGC
+    exchange: COMEX
+    currency: USD
+    # expiration: will use current month's future if not specified

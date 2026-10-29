@@ -1,7 +1,42 @@
 from pathlib import Path
 from typing import Any, Dict, Optional
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator, field_validator
+
+
+class TelegramConnectionConfig(BaseModel):
+    """Configuration for a single Telegram bot connection."""
+    token: str = Field(..., description="Telegram Bot API token")
+    chat_id: str = Field(..., description="Telegram chat ID or channel ID")
+
+    @field_validator('chat_id', mode='before')
+    @classmethod
+    def _ensure_chat_id_str(cls, v: Any) -> str:
+        return str(v)
+
+
+class TelegramSystemConfig(BaseModel):
+    """System-level Telegram configuration mapping connection names to credentials."""
+    connections: Dict[str, TelegramConnectionConfig] = Field(
+        default_factory=dict,
+        description="Named Telegram connections (e.g. 'default', 'alerts')"
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_connections(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            # If token and chat_id are directly provided at root of telegram block, wrap into 'default' connection
+            if "token" in data and "chat_id" in data and "connections" not in data:
+                return {
+                    "connections": {
+                        "default": {
+                            "token": data["token"],
+                            "chat_id": str(data["chat_id"])
+                        }
+                    }
+                }
+        return data
 
 
 class ConnectionConfig(BaseModel):
@@ -32,6 +67,7 @@ class IbcConfig(BaseModel):
     userid: str = Field(default="", description="IB username")
     password: str = Field(default="", description="IB password")
     twsPath: Optional[str] = Field(default=None, description="Path to TWS installation directory")
+    twsSettingsPath: Optional[str] = Field(default=None, description="Path to TWS settings directory")
     ibcPath: Optional[str] = Field(default=None, description="Path to IBC installation directory")
     ibcIni: Optional[str] = Field(default=None, description="Path to IBC config file")
     javaPath: Optional[str] = Field(
@@ -73,6 +109,7 @@ class ConfigModel(BaseModel):
     flex: FlexConfig
     database: DatabaseConfig
     ibc: Optional[IbcConfig] = Field(default_factory=IbcConfig)
+    telegram: Optional[TelegramSystemConfig] = Field(default=None)
     
     class Config:
         extra = "forbid"
@@ -114,11 +151,25 @@ class SystemConfig:
         # Validate using pydantic
         self._validated_config = ConfigModel(**self._merged_config)
 
-        # Ensure javaPath / JAVA_PATH aliases are accessible in merged_config
-        if self._validated_config.ibc and self._validated_config.ibc.javaPath:
+        # Ensure javaPath / JAVA_PATH aliases and ibcIni are properly resolved in merged_config
+        if self._validated_config.ibc:
             ibc_dict = self._merged_config.setdefault("ibc", {})
-            ibc_dict.setdefault("javaPath", self._validated_config.ibc.javaPath)
-            ibc_dict.setdefault("JAVA_PATH", self._validated_config.ibc.javaPath)
+            if self._validated_config.ibc.javaPath:
+                ibc_dict.setdefault("javaPath", self._validated_config.ibc.javaPath)
+                ibc_dict.setdefault("JAVA_PATH", self._validated_config.ibc.javaPath)
+
+            # Resolve relative ibcIni or auto-detect local ibc_config.ini in config directory
+            if self._validated_config.ibc.ibcIni:
+                ini_path = Path(self._validated_config.ibc.ibcIni)
+                if not ini_path.is_absolute():
+                    ini_path = (self._config_dir / ini_path).resolve()
+                    self._validated_config.ibc.ibcIni = str(ini_path)
+                    ibc_dict["ibcIni"] = str(ini_path)
+            else:
+                local_ini = self._config_dir / "ibc_config.ini"
+                if local_ini.exists():
+                    self._validated_config.ibc.ibcIni = str(local_ini.resolve())
+                    ibc_dict["ibcIni"] = str(local_ini.resolve())
     
     def _load_yaml_file(self, filename: str) -> Optional[Dict[str, Any]]:
         """

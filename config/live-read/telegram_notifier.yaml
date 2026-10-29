@@ -1,0 +1,25 @@
+# Telegram Notification Bot Configuration for live-read
+type: "telegram"
+connection: "default"     # References telegram.connections.default in .secret-config.yaml
+silent_startup: false     # Set to true to suppress the online greeting message
+
+# Phase 1: Real-time trading alerts
+notifications:
+  enabled: true
+  notify_on_placement: true        # Alert when new orders are placed (Limit, Stop, Combo)
+  notify_on_status_change: true    # Alert on status updates (Submitted, PreSubmitted, Inactive)
+  notify_on_cancellation: true     # Alert when orders are cancelled
+  notify_on_fill: true             # Alert on execution fills with prices and commissions
+  notify_on_price_adjustments: false # Suppress tick chase adjustments
+
+  # Filtering
+  filter_accounts: ["U10702503"]
+  include_order_refs: []
+  exclude_order_refs: []
+
+# Phase 2 (Future): Scheduled portfolio observations
+observations:
+  enabled: false
+  schedule: "0 9,15 * * 1-5"
+  timezone: "America/New_York"
+  rules: []

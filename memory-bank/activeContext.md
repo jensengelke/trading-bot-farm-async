@@ -19,8 +19,15 @@ The Trading Bot Farm is an operational asynchronous options trading farm executi
   - Attached GTC bracket orders (Stop Loss & Take Profit) with `outsideRth=True`.
   - Refined shutdown handling: preserves active bracket orders while cancelling in-flight limit chase orders.
 - **Condition Evaluators**: Implemented pre-trade market filters in `framework/entry_conditions.py` (`SMA`, `underlying_intraday_move`, `VIX`) and post-entry exit checks in `framework/exit_conditions.py` (`position_delta`).
+- **Telegram Notification Bot (`bots/telegram/`)**: Implemented bot type for real-time notifications via Telegram. Subscribes to shared IB connection global order events (`openOrderEvent`, `orderStatusEvent`, `execDetailsEvent`), formats HTML alerts with debouncing and account/orderRef filters, and transmits via non-blocking `TelegramClient` (`framework/telegram_client.py`). Sends a comprehensive "connected" readiness status message on startup detailing account balances (Net Liquidation, Total Cash, Available Funds, Buying Power, Margin), active portfolio positions (with cost basis, market price, and unrealized P&L), and open orders. Two-tier secret credentials (`telegram.connections`) added to `SystemConfig` (`framework/config/system_config.py`).
 - **Database Inspection Tool**: Created `show_db.py` CLI script to inspect table schemas and active virtual positions.
-- **Environment Structure**: Standardized environments to `config/live`, `config/demo`, and `config/test-live` (all references to `paper` eliminated). Pydantic models updated to include `DatabaseConfig` and `IbcConfig` (with `javaPath` / `JAVA_PATH` support).
+- **Environment Structure & Multi-Connection Support**:
+  - Environments configured: `config/live`, `config/live-read`, `config/demo`, and `config/test-live`.
+  - Supports multiple concurrent Interactive Brokers connections ("per account and per user").
+  - `config/live` runs user `jensengelke-bot1` connected to IB Gateway on port 4001 via `config-live.ini` (`OverrideTwsApiPort=4001`).
+  - `config/live-read` runs user `jensengelke-bot2` connected to dedicated IB Gateway on port 4002 via `config-live-read.ini` (`OverrideTwsApiPort=4002`).
+  - `SystemConfig` updated to auto-detect and resolve `ibcIni` (supports both absolute paths and config-directory relative paths) and `twsSettingsPath`.
+  - `IBConnectionManager` updated with Windows `/TwsSettingsPath:` support and detailed IBC startup logging.
 
 ## Next Steps
 
@@ -87,6 +94,7 @@ class Bot(BotBase):
 ### Active Bot Types
 - `strategy`: Flexible multi-leg options spread bot (Butterflies, Iron Condors, Bull Put Spreads).
 - `verify`: Connectivity verification bot across stocks, options, and futures.
+- `telegram`: Real-time order, fill, and status notification bot with extensible observation architecture.
 
 ### Persistence Files
 - `data/live_positions.db`: SQLite database for live trading virtual positions.

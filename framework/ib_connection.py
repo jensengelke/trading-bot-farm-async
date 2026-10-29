@@ -11,9 +11,61 @@ import logging
 from framework.request_tracker import get_error_dispatcher
 
 
-from ib_async import IBC, Watchdog
+from ib_async import IBC, Watchdog, util
 from datetime import datetime
 import pytz
+
+
+def _patch_ibc_for_windows():
+    """Ensure IBC in ib_async correctly maps /TwsSettingsPath: on Windows."""
+    from ib_async import ibcontroller
+    
+    async def patched_startAsync(self):
+        if self._proc:
+            return
+        self._logger.info("Starting")
+
+        args = dict(
+            twsVersion=("", ""),
+            gateway=("--gateway", "/Gateway"),
+            tradingMode=("--mode=", "/Mode:"),
+            twsPath=("--tws-path=", "/TwsPath:"),
+            twsSettingsPath=("--tws-settings-path=", "/TwsSettingsPath:"),
+            ibcPath=("--ibc-path=", "/IbcPath:"),
+            ibcIni=("--ibc-ini=", "/Config:"),
+            javaPath=("--java-path=", "/JavaPath:"),
+            userid=("--user=", "/User:"),
+            password=("--pw=", "/PW:"),
+            fixuserid=("--fix-user=", "/FIXUser:"),
+            fixpassword=("--fix-pw=", "/FIXPW:"),
+            on2fatimeout=("--on2fatimeout=", "/On2FATimeout:"),
+        )
+
+        cmd = [
+            (
+                f"{self.ibcPath}\\scripts\\StartIBC.bat"
+                if self._isWindows
+                else f"{self.ibcPath}/scripts/ibcstart.sh"
+            )
+        ]
+        for k, v in util.dataclassAsDict(self).items():
+            arg = args[k][self._isWindows]
+            if v:
+                if arg.endswith("=") or arg.endswith(":"):
+                    cmd.append(f"{arg}{v}")
+                elif arg:
+                    cmd.append(arg)
+                else:
+                    cmd.append(str(v))
+
+        self._proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE
+        )
+        self._monitor = asyncio.ensure_future(self.monitorAsync())
+
+    ibcontroller.IBC.startAsync = patched_startAsync
+
+_patch_ibc_for_windows()
 
 class IBConnectionManager:
     """
@@ -80,9 +132,15 @@ class IBConnectionManager:
                         userid=config_dict.get('userid', ''),
                         password=config_dict.get('password', ''),
                         twsPath=config_dict.get('twsPath', ''),
+                        twsSettingsPath=config_dict.get('twsSettingsPath', ''),
                         ibcPath=config_dict.get('ibcPath', ''),
                         ibcIni=config_dict.get('ibcIni', ''),
                         javaPath=config_dict.get('javaPath', '') or config_dict.get('JAVA_PATH', '') or ''
+                    )
+                    self._logger.info(
+                        f"IBC configured: user={config_dict.get('userid')}, "
+                        f"tradingMode={config_dict.get('tradingMode')}, target_port={port}, "
+                        f"ibcIni={config_dict.get('ibcIni') or 'default'}"
                     )
                     
                     self._watchdog = Watchdog(

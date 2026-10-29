@@ -172,6 +172,12 @@ bot_instance = bot_class(bot_id, config, self.system_config, self.ib_connection_
   - Validates market data connectivity for stocks, options, and futures.
   - Resolves contract types dynamically and logs 1-minute historical bars.
 
+- **Telegram Bot (`bots/telegram/bot.py`)**:
+  - Implements real-time trading notifications via Telegram.
+  - Subscribes to shared IB connection global order events (`openOrderEvent`, `orderStatusEvent`, `execDetailsEvent`).
+  - Uses `TelegramClient` (`framework/telegram_client.py`) with non-blocking HTTP and automatic message splitting.
+  - Formats rich HTML alerts for order placement, fills, cancellations, and status transitions with account and orderRef filtering.
+
 ### 11. Logging & Method Tracing (framework/logging_config.py, framework/decorators.py)
 
 **Responsibilities:**

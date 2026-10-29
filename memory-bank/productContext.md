@@ -23,6 +23,9 @@ The Trading Bot Farm framework was created to solve the challenges of running mu
 6. **Environment & Credential Isolation**:
    - Separate configuration environments (`config/live`, `config/demo`, `config/test-live`) ensure zero cross-contamination between testing, demo simulations, and live capital.
    - Two-tier YAML configurations keep sensitive passwords, account numbers, and Flex tokens gitignored.
+7. **Real-Time Operational Observability**:
+   - Push alerts via Telegram for order submissions, execution fills, and cancellations across all bots and manual orders without requiring the operator to keep TWS open or watch raw log streams.
+
 
 ## How It Should Work
 
