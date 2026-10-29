@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Any, Dict, Optional
 import yaml
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, model_validator
 
 
 class ConnectionConfig(BaseModel):
@@ -34,10 +34,37 @@ class IbcConfig(BaseModel):
     twsPath: Optional[str] = Field(default=None, description="Path to TWS installation directory")
     ibcPath: Optional[str] = Field(default=None, description="Path to IBC installation directory")
     ibcIni: Optional[str] = Field(default=None, description="Path to IBC config file")
-    trading_days: list[str] = Field(default=["Mon", "Tue", "Wed", "Thu", "Fri"], description="Days of the week to maintain connection")
-    maintain_connection_from: str = Field(default="08:00", description="Time to start maintaining connection (HH:MM)")
-    maintain_connection_until: str = Field(default="17:00", description="Time to stop maintaining connection (HH:MM)")
-    maintain_connection_timezone: str = Field(default="America/New_York", description="Timezone for connection maintenance times")
+    javaPath: Optional[str] = Field(
+        default=None,
+        description="Path to Java installation directory or executable"
+    )
+    trading_days: list[str] = Field(
+        default=["Mon", "Tue", "Wed", "Thu", "Fri"],
+        description="Days of the week to maintain connection"
+    )
+    maintain_connection_from: str = Field(
+        default="08:00",
+        description="Time to start maintaining connection (HH:MM)"
+    )
+    maintain_connection_until: str = Field(
+        default="17:00",
+        description="Time to stop maintaining connection (HH:MM)"
+    )
+    maintain_connection_timezone: str = Field(
+        default="America/New_York",
+        description="Timezone for connection maintenance times"
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_java_path(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if data.get("javaPath") is None:
+                for alias in ("JAVA_PATH", "java_path"):
+                    if alias in data and data[alias] is not None:
+                        data["javaPath"] = data[alias]
+                        break
+        return data
 
 
 class ConfigModel(BaseModel):
@@ -86,6 +113,12 @@ class SystemConfig:
         
         # Validate using pydantic
         self._validated_config = ConfigModel(**self._merged_config)
+
+        # Ensure javaPath / JAVA_PATH aliases are accessible in merged_config
+        if self._validated_config.ibc and self._validated_config.ibc.javaPath:
+            ibc_dict = self._merged_config.setdefault("ibc", {})
+            ibc_dict.setdefault("javaPath", self._validated_config.ibc.javaPath)
+            ibc_dict.setdefault("JAVA_PATH", self._validated_config.ibc.javaPath)
     
     def _load_yaml_file(self, filename: str) -> Optional[Dict[str, Any]]:
         """

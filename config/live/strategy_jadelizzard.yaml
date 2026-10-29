@@ -1,0 +1,69 @@
+# FKK Strategy Bot Configuration
+# This is an example of using the strategy bot with FKK-style entry conditions
+
+type: strategy
+
+# Entry conditions - all must be met before placing trade
+entry_conditions:
+  - name: moving_average
+    type: SMA
+    period: 5
+    operator: ">="
+  - name: intraday_move
+    type: underlying_intraday_move
+    operator: ">="
+    threshold: 0.003
+
+# Underlying configuration
+underlying_type: Index
+underlying_symbol: XSP
+underlying_exchange: CBOE
+
+# Expiration configuration
+dte: 7  # 7 days to expiration
+use_exact_dte: true
+
+# Scheduling configuration
+entry_days:
+  - Monday
+  - Thursday
+  - Friday
+
+entry_times:
+  - "10:00"
+
+timezone: America/New_York
+
+# Leg configuration - Bull Put Spread
+legs:
+  - name: short_put
+    right: put
+    ratio: -1  # Sell
+    strike_selection: delta
+    strike_selection_delta: 0.30
+  
+  - name: short_call
+    right: call
+    ratio: -1  # Sell
+    strike_selection: delta
+    strike_selection_delta: 0.30
+
+  - name: long_call
+    right: call
+    ratio: 1  # Buy
+    strike_selection: leg_offset
+    strike_selection_parent: short_call
+    strike_offset: 3  # 3 points above short call
+
+# Position sizing
+num_contracts: 1
+
+# Pricing configuration
+mid_price_monitoring_period: 10  # seconds
+min_premium: -3.50  # Max credit of $3.50 
+max_premium: -2.50  # Minimum credit of $1.30
+# max_price_adjustments: 2
+
+# Bracket orders (optional)
+stoploss_factor: null
+takeprofit_factor: 0.50

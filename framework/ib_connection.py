@@ -74,14 +74,15 @@ class IBConnectionManager:
                     config_dict = ibc_config if isinstance(ibc_config, dict) else ibc_config.dict()
                     
                     ibc = IBC(
-                        twsVersion=config_dict.get('twsVersion', 1045),
+                        twsVersion=config_dict.get('twsVersion', 1050),
                         gateway=config_dict.get('gateway', True),
                         tradingMode=config_dict.get('tradingMode', 'paper'),
                         userid=config_dict.get('userid', ''),
                         password=config_dict.get('password', ''),
                         twsPath=config_dict.get('twsPath', ''),
                         ibcPath=config_dict.get('ibcPath', ''),
-                        ibcIni=config_dict.get('ibcIni', '')
+                        ibcIni=config_dict.get('ibcIni', ''),
+                        javaPath=config_dict.get('javaPath', '') or config_dict.get('JAVA_PATH', '') or ''
                     )
                     
                     self._watchdog = Watchdog(

@@ -151,7 +151,7 @@ trading-bot-farm-async/
   - `ConnectionConfig`: `host`, `port` (0-65535), `client_id` (>0), `selected_account`.
   - `FlexConfig`: `flex_token`, `flex_query_id`.
   - `DatabaseConfig`: `path` (SQLite database location).
-  - `IbcConfig`: `enabled`, `twsVersion`, `gateway`, `tradingMode` ('live'/'paper'), `userid`, `password`, `twsPath`, `ibcPath`, `ibcIni`, `trading_days`, `maintain_connection_from`, `maintain_connection_until`, `maintain_connection_timezone`.
+  - `IbcConfig`: `enabled`, `twsVersion`, `gateway`, `tradingMode` ('live'/'paper'), `userid`, `password`, `twsPath`, `ibcPath`, `ibcIni`, `javaPath`, `trading_days`, `maintain_connection_from`, `maintain_connection_until`, `maintain_connection_timezone`.
   - `ConfigModel`: Validates all sections with `extra = "forbid"`.
 - **Bot Models**:
   - `StrategyBotConfig` (`bots/strategy/config.py`): Validates legs (`StrategyLegConfig`), strike selection methods, delta bounds, entry conditions, exit conditions, and scheduling.

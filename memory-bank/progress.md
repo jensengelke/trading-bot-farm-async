@@ -43,7 +43,7 @@
 ### Configuration System & Environments ✅
 - **Environment Isolation**: Configured for `live`, `demo`, and `test-live` environments.
 - **Two-Tier Merging**: Merges public `config.yaml` with sensitive `.secret-config.yaml`.
-- **Pydantic Validation**: Strict schemas (`ConfigModel`, `ConnectionConfig`, `FlexConfig`, `DatabaseConfig`, `IbcConfig`, `StrategyBotConfig`, `VerifyBotConfig`).
+- **Pydantic Validation**: Strict schemas (`ConfigModel`, `ConnectionConfig`, `FlexConfig`, `DatabaseConfig`, `IbcConfig` with `javaPath` support, `StrategyBotConfig`, `VerifyBotConfig`).
 
 ### Logging Infrastructure ✅
 - Three-tier logs (`*.log`, `*-error.log`, `*-trace.log`) for system and each bot.

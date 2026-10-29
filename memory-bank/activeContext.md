@@ -20,7 +20,7 @@ The Trading Bot Farm is an operational asynchronous options trading farm executi
   - Refined shutdown handling: preserves active bracket orders while cancelling in-flight limit chase orders.
 - **Condition Evaluators**: Implemented pre-trade market filters in `framework/entry_conditions.py` (`SMA`, `underlying_intraday_move`, `VIX`) and post-entry exit checks in `framework/exit_conditions.py` (`position_delta`).
 - **Database Inspection Tool**: Created `show_db.py` CLI script to inspect table schemas and active virtual positions.
-- **Environment Structure**: Standardized environments to `config/live`, `config/demo`, and `config/test-live` (all references to `paper` eliminated). Pydantic models updated to include `DatabaseConfig` and `IbcConfig`.
+- **Environment Structure**: Standardized environments to `config/live`, `config/demo`, and `config/test-live` (all references to `paper` eliminated). Pydantic models updated to include `DatabaseConfig` and `IbcConfig` (with `javaPath` / `JAVA_PATH` support).
 
 ## Next Steps
 

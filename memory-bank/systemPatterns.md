@@ -143,7 +143,7 @@ bot_instance = bot_class(bot_id, config, self.system_config, self.ib_connection_
   - `ConnectionConfig`: `host`, `port`, `client_id`, `selected_account`.
   - `FlexConfig`: `flex_token`, `flex_query_id`.
   - `DatabaseConfig`: `path` (relative or absolute path to SQLite file).
-  - `IbcConfig`: `enabled`, `twsVersion`, `gateway`, `tradingMode`, `userid`, `password`, `twsPath`, `ibcPath`, `ibcIni`, `trading_days`, `maintain_connection_from`, `maintain_connection_until`, `maintain_connection_timezone`.
+  - `IbcConfig`: `enabled`, `twsVersion`, `gateway`, `tradingMode`, `userid`, `password`, `twsPath`, `ibcPath`, `ibcIni`, `javaPath`, `trading_days`, `maintain_connection_from`, `maintain_connection_until`, `maintain_connection_timezone`.
 - Dot-notation getter (`config.get("database.path")`).
 
 ### 9. BotBase (framework/bot_base.py)
