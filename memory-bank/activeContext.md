@@ -1,5 +1,14 @@
 # Active Context
 
+## OptionOmega Bot Planning (2026-11-02)
+
+- Consolidated agreed design in `docs/optionomega_bot_plan.md`; planning deliverable only, no new trading runtime enabled.
+- Broker GTC limit PT; broker GTC stop or stop-limit SL, defaulting to stop only when SL is configured. BAG/OCA acceptance must be paper-validated; existing submission code does not prove broker support.
+- Four explicit credit/debit opening bounds; mutually exclusive non-null OO compatibility bounds (user accepted validation error). OO filtering is positive, side-agnostic, after entry slippage; keep this separate from live chase budgets.
+- No implicit entry/exit rules. Explicit first-leg-expiry close boolean; false is valid for calendars and requires residual-leg/assignment reconciliation, not whole-position closure at first expiry.
+- Floating entry is Phase 1; consume and persist the trading-day latch when conditions fire, before selection/submission, even if no fill follows.
+- Correction to older statements below: strategy bot constructs PositionManager and ExitConditionEvaluator but does not call persistence methods or run exit monitoring. These integrations remain work, not established runtime behavior.
+
 ## Current Work Focus
 
 The Trading Bot Farm is an operational asynchronous options trading farm executing multi-leg options spreads on Interactive Brokers across multiple environments (`live`, `demo`, `test-live`). The current focus is operational monitoring, strategy execution stability, and preparing the state reconciliation engine to synchronize SQLite virtual positions with broker net portfolios.
@@ -28,6 +37,13 @@ The Trading Bot Farm is an operational asynchronous options trading farm executi
   - `config/live-read` runs user `jensengelke-bot2` connected to dedicated IB Gateway on port 4002 via `config-live-read.ini` (`OverrideTwsApiPort=4002`).
   - `SystemConfig` updated to auto-detect and resolve `ibcIni` (supports both absolute paths and config-directory relative paths) and `twsSettingsPath`.
   - `IBConnectionManager` updated with Windows `/TwsSettingsPath:` support and detailed IBC startup logging.
+
+## IBC Startup Investigation (2026-11-02)
+
+- Verified against local upstream source at `C:\git\ibc`: `IncludeStackTraceForExceptions=yes` in the active `C:\IBC\config-live-read.ini` enables full exception traces on stdout, already captured in the farm's system trace log. No application logging change is needed for these traces.
+- Python invokes `scripts\StartIBC.bat` directly, bypassing `DisplayBannerAndLaunch.bat`, which creates the standalone `C:\IBC\logs` files.
+- Standalone 1050 logs show bundled Java 25.0.2.0.101; the failing Python launch explicitly uses Semeru/OpenJ9 Java 27. Recommend testing with `ibc.javaPath: ""` to use bundled Java; root cause remains unconfirmed pending a stack trace.
+- Exit 1107 is named `CANT_FIND_ENTRYPOINT`, but `startGateway()` uses it for any Throwable from `ibgateway.GWClient.main()`. It does not prove an entrypoint is absent or identify an XML file. No live session was launched or runtime configuration changed during investigation.
 
 ## Next Steps
 

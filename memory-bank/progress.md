@@ -1,5 +1,12 @@
 # Progress
 
+## OptionOmega Plan (2026-11-02)
+
+- [x] Recorded agreed settings, ignored backtest properties, framework gaps, execution safety, phase sequence and test gates in `docs/optionomega_bot_plan.md`.
+- [ ] Phase 1 schema/pricing tests, market data, floating scheduler, durable day latch, GTC exits, limit chaser, monitoring and recovery. No new bot runtime is implemented yet.
+- Decisions: calendar first-expiry close may be false; optional hard-stop order type defaults to stop; floating trigger consumes the day even without a fill; explicit and OO premium families together are a validation error.
+- Correction to older completed claims below: PositionManager storage exists but `bots/strategy/bot.py` does not call its persistence methods. ExitConditionEvaluator exists but is not evaluated in an active position-monitor loop. Broker BAG stop/OCA support remains unverified, not guaranteed by existing code.
+
 ## What Works
 
 ### Core Framework & Lifecycle ✅
@@ -116,6 +123,11 @@
 - [x] Real-time Telegram notifications (`bots/telegram/`)
 
 ## Known Issues & Technical Debt
+
+### IBC Startup Diagnostic Finding (2026-11-02)
+- Investigated live-read exit 1107 using local IBC source and installed scripts; no live launch performed. Enable `IncludeStackTraceForExceptions=yes` in the active external IBC INI to capture the actual exception chain in the existing system trace log.
+- Confirmed runtime mismatch: standalone Gateway 1050 uses bundled Java 25; Python explicitly selects Semeru/OpenJ9 Java 27. Testing bundled Java is recommended, not yet validated as a fix.
+- No runtime configuration or application code changed; standalone IBC log files are wrapper-script redirection, bypassed by the Python launcher.
 
 ### Known Limitations
 - **Manual Intervention Sync**: Closing or modifying legs manually inside TWS leaves orphaned bracket orders in IB; automated cancellation via reconciliation loop is not yet active.
