@@ -8,6 +8,7 @@ from framework.request_tracker import get_request_tracker, get_error_dispatcher
 
 if TYPE_CHECKING:
     from framework.ib_connection import IBConnectionManager
+    from framework.order_service import OrderService
 
 
 class BotBase(ABC):
@@ -40,6 +41,25 @@ class BotBase(ABC):
         
         # Register this bot's error handler
         self._error_dispatcher.register_bot_handler(self.bot_id, self._on_ib_error)
+        
+        self._order_service = None
+    
+    @property
+    def order_service(self) -> 'OrderService':
+        """
+        Framework order service for this bot's instance database.
+        
+        Bots place, modify and cancel orders through this service. It assigns the unique
+        orderRef and persists orders, fills and virtual position state, so bots do not
+        track any of that themselves. Created on first use, so bots that never trade
+        do not touch the database.
+        """
+        if self._order_service is None:
+            from framework.order_service import get_order_service
+            self._order_service = get_order_service(
+                self.system_config.get("database.path"), self.logger
+            )
+        return self._order_service
     
     def _on_ib_error(self, reqId: int, errorCode: int, errorString: str, contract) -> None:
         """

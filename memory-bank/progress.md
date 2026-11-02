@@ -1,5 +1,16 @@
 # Progress
 
+## Order/Fill Persistence Framework (2026-11-02)
+
+- [x] `OrderService` places orders, assigns unique `orderRef` (`bot_id:position_id:role`), persists orders, status, modifications, fills, commissions and position status; strategy bot migrated; 21 unit tests pass (plus existing 16).
+- [x] `bots` table (bot id + config-hash version id + valid_from + config) referenced by a foreign key from `virtual_positions`; `orders` and `fills` tables; automatic migration of older DBs (also converts the short-lived `bot_config` column).
+- [x] Order rejection reason persisted (`orders.status_message/error_code`); order ids registered with the RequestTracker so IB errors reach the right bot.
+- [x] Database export/import with merge (`db_tool.py`, `framework/db_transfer.py`) for moving between the home PC and the cloud server; 25 tests.
+- [ ] Unverified live: first real run after this change (migration of the existing live DB happens on first start).
+- [ ] Paper-validate BAG execution reports and bracket (TP/SL) behaviour; decide how to treat combo vs leg fill rows.
+- [ ] `position_legs` table (queryable legs / net leg quantities), reconciliation vs `reqPositions`, exit-condition monitoring loop, `show_db.py` summary view.
+- Correction to the note below: the strategy bot now persists through `OrderService`; exit monitoring and reconciliation are still missing.
+
 ## OptionOmega Plan (2026-11-02)
 
 - [x] Recorded agreed settings, ignored backtest properties, framework gaps, execution safety, phase sequence and test gates in `docs/optionomega_bot_plan.md`.

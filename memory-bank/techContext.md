@@ -188,6 +188,11 @@ python trading_bot_farm.py --config config/test-live
 # View table schema and contents of the live database
 python show_db.py data/live_positions.db
 
+# Move/merge the database between machines (home PC <-> cloud server)
+python db_tool.py export data/live_positions.db live-export.json.gz
+python db_tool.py import data/live_positions.db live-export.json.gz --dry-run
+python db_tool.py import data/live_positions.db live-export.json.gz
+
 # View demo database
 python show_db.py data/demo_positions.db
 ```

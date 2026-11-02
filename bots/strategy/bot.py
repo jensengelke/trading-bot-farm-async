@@ -14,7 +14,7 @@ from framework.decorators import trace_all_methods
 from framework.option_utils import find_option_by_delta
 from framework.entry_conditions import EntryConditionEvaluator
 from framework.exit_conditions import ExitConditionEvaluator, calculate_position_greeks
-from framework.position_manager import PositionManager, VirtualPosition
+from framework.order_service import ROLE_OPEN, ROLE_STOP_LOSS, ROLE_TAKE_PROFIT
 import pytz
 import uuid
 
@@ -57,11 +57,8 @@ class Bot(BotBase):
         
         self.ib: Optional[IB] = None
         self._stop_requested = False
-        self._active_trades: List[Trade] = []
         
-        # Initialize position manager
-        db_path = self.system_config.get("database.path")
-        self.position_manager = PositionManager(db_path, self.logger)
+        # Orders, fills and virtual positions are persisted by the framework (self.order_service)
         
         # Initialize entry condition evaluator if conditions are configured
         self._entry_condition_evaluator: Optional[EntryConditionEvaluator] = None
@@ -77,8 +74,8 @@ class Bot(BotBase):
             exit_conditions_config = [cond.model_dump() for cond in self.validated_config.exit_conditions]
             self._exit_condition_evaluator = ExitConditionEvaluator(exit_conditions_config, self.logger)
         
-        # Track current position being opened (for linking fills to positions)
-        self._pending_position_id: Optional[str] = None
+        # Virtual position currently being opened (bracket orders attach to it)
+        self._position_id: Optional[str] = None
     
     def _on_ib_error(self, reqId: int, errorCode: int, errorString: str, contract: Contract) -> None:
         """
@@ -116,6 +113,9 @@ class Bot(BotBase):
             ibc_config = self.system_config.get("ibc")
             self.ib = await self.ib_connection_manager.connect(host, port, client_id, ibc_config)
             self.logger.info("Using shared IB connection")
+            # Start persisting orders/fills right away so executions of GTC bracket orders
+            # placed before a restart are recorded too
+            self.order_service.attach(self.ib)
             # Note: Error handling is now automatic via the framework's error dispatcher
         except Exception as e:
             self.logger.error(f"Failed to get IB connection: {e}", exc_info=True)
@@ -864,16 +864,44 @@ class Bot(BotBase):
                 leg.exchange = "SMART"
                 combo.comboLegs.append(leg)
             
+            # Create the virtual position this order opens. The framework persists it
+            # together with a snapshot of this bot's configuration and assigns the orderRef.
+            position = self.order_service.create_position(
+                bot_id=self.bot_id,
+                bot_config=self.config,
+                underlying_symbol=self.validated_config.underlying_symbol,
+                expiration=option_contracts[0][1].lastTradeDateOrContractMonth,
+                legs_data={
+                    "legs": [
+                        {
+                            "name": leg_config.name,
+                            "con_id": contract.conId,
+                            "local_symbol": contract.localSymbol,
+                            "right": contract.right,
+                            "strike": contract.strike,
+                            "expiration": contract.lastTradeDateOrContractMonth,
+                            "ratio": leg_config.ratio,
+                        }
+                        for leg_config, contract in option_contracts
+                    ]
+                },
+                quantity=num_contracts,
+                exit_conditions=[
+                    cond.model_dump() for cond in (self.validated_config.exit_conditions or [])
+                ],
+            )
+            self._position_id = position.position_id
+            
             # Create limit order
             order = LimitOrder("BUY", num_contracts, limit_price)
             order.tif = "DAY"
-            order.orderRef = f"{self.bot_id}_strategy"
             
             self.logger.info(f"Placing strategy order: {num_contracts} @ {limit_price:.2f}")
             
-            # Place order
-            trade = self.ib.placeOrder(combo, order)
-            self._active_trades.append(trade)
+            # Place order through the framework (assigns orderRef, persists order and fills)
+            trade = self.order_service.place_order(
+                self.ib, position.position_id, combo, order, ROLE_OPEN
+            )
             
             # Monitor for fill with price adjustments
             adjustments_made = 0
@@ -912,12 +940,11 @@ class Bot(BotBase):
                     self.logger.info(f"Order not filled - adjusting price to {current_limit:.2f} (adjustment {adjustments_made}/{max_adjustments})")
                     
                     # Modify order
-                    order.lmtPrice = current_limit
-                    self.ib.placeOrder(combo, order)
+                    self.order_service.modify_order(self.ib, trade, limit_price=current_limit)
                 else:
                     # Max adjustments reached, cancel order
                     self.logger.warning("Max price adjustments reached - cancelling order")
-                    self.ib.cancelOrder(order)
+                    self.order_service.cancel_order(self.ib, trade)
                     break
             
             # Log final status
@@ -972,13 +999,13 @@ class Bot(BotBase):
                 stop_price = self._round_to_min_tick(stop_price, min_tick)
                 
                 stop_order = StopOrder("SELL", quantity, stop_price)
-                stop_order.orderRef = f"{self.bot_id}_strategy_stoploss"
                 stop_order.tif = "GTC"
                 stop_order.outsideRth = True  # Allow trigger outside regular trading hours
                 
                 self.logger.info(f"Placing stop loss order: SELL {quantity} @ STP {stop_price:.2f}")
-                stop_trade = self.ib.placeOrder(combo, stop_order)
-                self._active_trades.append(stop_trade)
+                self.order_service.place_order(
+                    self.ib, self._position_id, combo, stop_order, ROLE_STOP_LOSS
+                )
             
             # Place take profit order
             if takeprofit_factor is not None:
@@ -995,12 +1022,12 @@ class Bot(BotBase):
                 profit_price = self._round_to_min_tick(profit_price, min_tick)
                 
                 profit_order = LimitOrder("SELL", quantity, profit_price)
-                profit_order.orderRef = f"{self.bot_id}_strategy_takeprofit"
                 profit_order.tif = "GTC"
                 profit_order.outsideRth = True  # Allow trigger outside regular trading hours
                 self.logger.info(f"Placing take profit order: SELL {quantity} @ LMT {profit_price:.2f}")
-                profit_trade = self.ib.placeOrder(combo, profit_order)
-                self._active_trades.append(profit_trade)
+                self.order_service.place_order(
+                    self.ib, self._position_id, combo, profit_order, ROLE_TAKE_PROFIT
+                )
             
         except Exception as e:
             self.logger.error(f"Error placing bracket orders: {e}", exc_info=True)
@@ -1020,20 +1047,12 @@ class Bot(BotBase):
             except Exception as e:
                 self.logger.error(f"Error unsubscribing from errorEvent: {e}", exc_info=True)
         
-        # Cancel only non-bracket orders (don't cancel stop loss or take profit orders)
-        if self._active_trades and self.ib:
-            for trade in self._active_trades:
-                try:
-                    if trade.orderStatus.status not in ["Filled", "Cancelled"]:
-                        # Only cancel orders that are NOT bracket orders (stop loss or take profit)
-                        order_ref = trade.order.orderRef
-                        if order_ref and ("_stoploss" in order_ref or "_takeprofit" in order_ref):
-                            self.logger.info(f"Preserving bracket order: {order_ref}")
-                        else:
-                            self.ib.cancelOrder(trade.order)
-                            self.logger.info(f"Cancelled order: {order_ref}")
-                except Exception as e:
-                    self.logger.error(f"Error processing order during shutdown: {e}", exc_info=True)
+        # Cancel only non-bracket orders (the framework preserves stop loss / take profit)
+        if self.ib:
+            try:
+                self.order_service.cancel_unprotected_orders(self.ib, self.bot_id)
+            except Exception as e:
+                self.logger.error(f"Error processing orders during shutdown: {e}", exc_info=True)
         
         # Don't disconnect - the shared connection is managed by the framework
         self.ib = None

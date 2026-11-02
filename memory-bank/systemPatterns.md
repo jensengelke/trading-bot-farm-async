@@ -98,6 +98,10 @@ bot_instance = bot_class(bot_id, config, self.system_config, self.ib_connection_
 - **`RequestTracker` (Singleton)**: Maps `reqId -> bot_id`. Bots register request IDs when initiating API requests (`track_request(req_id)`).
 - **`ErrorDispatcher` (Singleton)**: Intercepts IB `errorEvent(reqId, errorCode, errorString, contract)`. Looks up `bot_id` via `RequestTracker` and invokes the bot's specific error handler. Untracked or system-level errors fall back to the system logger.
 
+### 4b. Order Service (framework/order_service.py)
+
+- Bots use `self.order_service` (never `ib.placeOrder` directly, never set `orderRef`). Unique orderRef = `<bot_id>:<position_id>:<role>`; tables `orders` and `fills` are written from IB events; position status PENDING/OPEN/CLOSED/CANCELLED is derived from order outcomes. Protective roles (`takeprofit`, `stoploss`) survive bot shutdown. Positions point to a `bots` row (bot id + config hash) instead of storing their config; IB rejection reasons are stored on the order; schema/migrations are in `framework/db_schema.py`, export/import in `framework/db_transfer.py` (`db_tool.py`).
+
 ### 5. Virtual Position Persistence (framework/position_manager.py)
 
 **Responsibilities:**

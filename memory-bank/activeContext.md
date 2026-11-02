@@ -1,5 +1,17 @@
 # Active Context
 
+## Framework-Owned Order Persistence (2026-11-02)
+
+- New `framework/order_service.py` (`OrderService`, exposed to bots as `self.order_service` on `BotBase`). Bots call `create_position`, `place_order(ib, position_id, contract, order, role)`, `modify_order`, `cancel_order`, `cancel_unprotected_orders`; they no longer call `ib.placeOrder/cancelOrder`, set `orderRef`, or track trades/fills.
+- `orderRef` is framework-assigned and unique: `<bot_id>:<position_id>:<role>` (+`#n` if a role repeats). Roles: `open`, `takeprofit`, `stoploss`, `close`. A caller-provided `orderRef` is overwritten with a warning. `bot_id` = YAML filename stem.
+- Persistence is event-driven (`orderStatusEvent`, `execDetailsEvent`, `commissionReportEvent`), attributed via the orderRef; unknown/foreign refs (manual TWS orders) are ignored. `attach()` also replays `ib.trades()` so restarts catch up. Position lifecycle PENDING -> OPEN (open order done with fills) / CANCELLED -> CLOSED (TP/SL/close order Filled; remaining protective orders are cancelled).
+- Schema lives in `framework/db_schema.py` (`SCHEMA_VERSION = 3`, `PRAGMA user_version`; structural, idempotent migration of any older layout, incl. rebuilding `virtual_positions`). Tables: `bots` (PK `bot_id, version_id`; `version_id` = first 16 hex of SHA-256 of the canonical config JSON, so it is identical on every machine; `valid_from` = first use, only ever moves earlier; `config` JSON), `virtual_positions` (composite FK `bot_id, bot_version_id` -> `bots`; NO config copy per row), `orders` (PK `order_ref`; `status_message`/`error_code` = IB's rejection reason), `fills` (PK IB `exec_id`, incl. commission). A bot version is registered by `OrderService.create_position`.
+- Errors: `place_order` registers the IB orderId with the `RequestTracker` (errors reach the bot's own log) and `OrderService._on_error` stores the reason on the order row (e.g. 201 margin rejection).
+- Export/import (`db_tool.py`, `framework/db_transfer.py`): `python db_tool.py export <db> <file.json[.gz]>` and `import <db> <file> [--dry-run] [--on-conflict newer|keep|overwrite] [--no-backup]`. Import merges by natural keys in ONE transaction (all or nothing, FK-checked), writes `<db>.pre-import-<ts>.db` first, never changes fills except filling a missing commission, `bots.valid_from` = earlier date. Stop the farm before importing into its DB. `data/*.db` are no longer tracked in git (user ran `git rm --cached`).
+- Strategy bot (`bots/strategy/bot.py`) now uses the service for opening, chase modification, cancel, TP/SL and shutdown. Tests: `tests/test_order_service.py` (31) and `tests/test_db_transfer.py` (25), IB mocked; run by module name, e.g. `python -m unittest tests.test_db_transfer tests.test_order_service` (`unittest discover` does not work: `tests` has no `__init__.py`).
+- Not yet verified live/paper: combo (BAG) execution reports (`execDetailsEvent` may arrive for the combo and/or legs; `fills.con_id/sec_type` distinguish), BAG stop/OCA acceptance. Legs are still a JSON blob (`legs_data`); no `position_legs` table, no exit-condition monitoring loop, no reconciliation vs `reqPositions`.
+- Older notes below claiming the strategy bot "does not call persistence methods" are now outdated for the strategy bot.
+
 ## OptionOmega Bot Planning (2026-11-02)
 
 - Consolidated agreed design in `docs/optionomega_bot_plan.md`; planning deliverable only, no new trading runtime enabled.
