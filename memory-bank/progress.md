@@ -16,7 +16,8 @@
 - [x] Recorded agreed settings, ignored backtest properties, framework gaps, execution safety, phase sequence and test gates in `docs/optionomega_bot_plan.md`.
 - [ ] Phase 1 schema/pricing tests, market data, floating scheduler, durable day latch, GTC exits, limit chaser, monitoring and recovery. No new bot runtime is implemented yet.
 - Decisions: calendar first-expiry close may be false; optional hard-stop order type defaults to stop; floating trigger consumes the day even without a fill; explicit and OO premium families together are a validation error.
-- Correction to older completed claims below: PositionManager storage exists but `bots/strategy/bot.py` does not call its persistence methods. ExitConditionEvaluator exists but is not evaluated in an active position-monitor loop. Broker BAG stop/OCA support remains unverified, not guaranteed by existing code.
+- [x] Plan re-evaluated against the persistence commit 3fcc5f0 (OrderService, schema v3, db export/import): added the "Persistence baseline" gap table, schema/migration/export-import rules, lifecycle and fill-accounting notes, shutdown/reconnect findings and extra acceptance tests.
+- Correction to older completed claims below: the strategy bot now persists through `OrderService` (since 3fcc5f0). ExitConditionEvaluator exists but is not evaluated in an active position-monitor loop; no `reqPositions` reconciliation exists. Broker BAG stop/OCA support remains unverified, not guaranteed by existing code.
 
 ## What Works
 
