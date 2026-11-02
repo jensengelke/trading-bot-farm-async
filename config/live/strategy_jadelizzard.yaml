@@ -3,17 +3,6 @@
 
 type: strategy
 
-# Entry conditions - all must be met before placing trade
-entry_conditions:
-  - name: moving_average
-    type: SMA
-    period: 5
-    operator: ">="
-  - name: intraday_move
-    type: underlying_intraday_move
-    operator: ">="
-    threshold: 0.003
-
 # Underlying configuration
 underlying_type: Index
 underlying_symbol: XSP
