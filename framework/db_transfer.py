@@ -42,14 +42,17 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from framework.db_schema import SCHEMA_VERSION, init_schema, utc_now
 
 FORMAT_NAME = "trading-bot-farm-db-export"
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 
 # (table, primary key columns), parents before children (foreign keys)
 TABLES: List[Tuple[str, Tuple[str, ...]]] = [
     ("bots", ("bot_id", "version_id")),
+    ("entry_latches", ("bot_id", "trading_date")),
     ("virtual_positions", ("position_id",)),
+    ("position_legs", ("position_id", "leg_id")),
     ("orders", ("order_ref",)),
     ("fills", ("exec_id",)),
+    ("order_events", ("event_id",)),
 ]
 
 CONFLICT_POLICIES = ("newer", "keep", "overwrite")
@@ -132,7 +135,12 @@ def read_export(path: Union[str, Path]) -> Dict[str, Any]:
             f"(this program reads version {FORMAT_VERSION})"
         )
     schema_version = document.get("schema_version")
-    if not isinstance(schema_version, int) or schema_version > SCHEMA_VERSION:
+    if not isinstance(schema_version, int) or schema_version != SCHEMA_VERSION:
+        if isinstance(schema_version, int) and schema_version < SCHEMA_VERSION:
+            raise TransferError(
+                f"Incompatible export file: schema version {schema_version} < {SCHEMA_VERSION}. "
+                f"Older databases cannot be imported into clean schema v4."
+            )
         raise TransferError(
             f"The file was written by a newer program (schema {schema_version}, "
             f"this program supports up to {SCHEMA_VERSION}); update this program first"
@@ -248,6 +256,16 @@ def _merge_table(conn: sqlite3.Connection, table: str, pk: Tuple[str, ...],
             if incoming["valid_from"] < current["valid_from"]:
                 conn.execute(f"UPDATE bots SET valid_from = ? WHERE {where}",
                              [incoming["valid_from"]] + [incoming[c] for c in pk])
+            stats.unchanged += 1
+            continue
+
+        if table == "entry_latches":
+            # entry latches are append-only; an existing latch means the date was consumed
+            stats.unchanged += 1
+            continue
+
+        if table == "order_events":
+            # order events are immutable audit records
             stats.unchanged += 1
             continue
 

@@ -267,7 +267,7 @@ class TestPersistenceFromEvents(OrderServiceTestCase):
         self.service.detach(self.ib)
         self.execute(trade, "E9", 1, 1.0)
         self.set_status(trade, "Filled", filled=1, avg=1.0)
-        self.assertEqual(self.pm.get_position(p.position_id).status, "PENDING")
+        self.assertEqual(self.pm.get_position(p.position_id).status, "ENTRY_PENDING")
 
         self.service.attach(self.ib)
 
@@ -335,9 +335,9 @@ class TestBotVersions(OrderServiceTestCase):
             with self.assertRaises(sqlite3.IntegrityError):
                 conn.execute(
                     "INSERT INTO virtual_positions (position_id, bot_id, bot_version_id, status,"
-                    " underlying_symbol, expiration, legs_data, quantity, opening_order_ref,"
-                    " created_at, updated_at) VALUES ('x','strategy_fkk','nope','PENDING','SPX',"
-                    "'20260702','{}',1,'','t','t')")
+                    " underlying_symbol, quantity, opening_order_ref,"
+                    " created_at, updated_at) VALUES ('x','strategy_fkk','nope','ENTRY_PENDING','SPX',"
+                    "1,'','t','t')")
         finally:
             conn.close()
 
@@ -378,78 +378,78 @@ class TestOrderErrors(OrderServiceTestCase):
             get_request_tracker().get_bot_for_request(trade.order.orderId), "strategy_restarted")
 
 
-class TestSchemaMigration(unittest.TestCase):
-    V1_DDL = """CREATE TABLE virtual_positions (
-        position_id TEXT PRIMARY KEY, bot_id TEXT NOT NULL, status TEXT NOT NULL,
-        underlying_symbol TEXT NOT NULL, expiration TEXT NOT NULL, legs_data TEXT NOT NULL,
-        quantity INTEGER NOT NULL, opening_order_ref TEXT NOT NULL, opening_fill_price REAL,
-        opening_fill_time TEXT, tp_order_id INTEGER, sl_order_id INTEGER, exit_conditions TEXT,
-        initial_greeks TEXT, closing_fill_price REAL, closing_fill_time TEXT,
-        created_at TEXT NOT NULL, updated_at TEXT NOT NULL%s)"""
-
-    @staticmethod
-    def _insert(conn, position_id, bot_id, created_at, config=None):
-        columns = ("position_id, bot_id, status, underlying_symbol, expiration, legs_data, quantity,"
-                   " opening_order_ref, created_at, updated_at")
-        values = [position_id, bot_id, "OPEN", "SPX", "20260702", "{}", 1, "ref", created_at, created_at]
-        if config is not None:
-            columns += ", bot_config"
-            values.append(config)
-        conn.execute(
-            f"INSERT INTO virtual_positions ({columns}) VALUES ({','.join('?' * len(values))})", values)
-
-    def test_version1_database_is_upgraded(self):
+class TestSchemaV4(unittest.TestCase):
+    def test_fresh_schema_v4(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "v1.db")
-            conn = sqlite3.connect(path)
-            conn.execute(self.V1_DDL % "")
-            self._insert(conn, "p1", "strategy_fkk", "2026-06-01T10:00:00")
-            conn.commit()
-            conn.close()
-
+            path = os.path.join(tmp, "v4.db")
             pm = PositionManager(path, logging.getLogger("test_order_service"))
-            PositionManager(path, logging.getLogger("test_order_service"))  # idempotent
-
-            self.assertIsNone(pm.get_position("p1").bot_version_id)  # version 1 stored no config
             conn = sqlite3.connect(path)
             try:
                 tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-                order_columns = {r[1] for r in conn.execute("PRAGMA table_info(orders)")}
-                self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
+                user_ver = conn.execute("PRAGMA user_version").fetchone()[0]
+                self.assertEqual(user_ver, 4)
+                expected_tables = {
+                    "bots", "entry_latches", "virtual_positions", "position_legs",
+                    "orders", "fills", "order_events"
+                }
+                self.assertTrue(expected_tables <= tables)
             finally:
                 conn.close()
-            self.assertTrue({"bots", "virtual_positions", "orders", "fills"} <= tables)
-            self.assertTrue({"status_message", "error_code"} <= order_columns)
 
-    def test_version2_bot_config_blobs_become_bot_versions(self):
-        config_a = {"type": "strategy", "dte": 0}
-        config_b = {"type": "strategy", "dte": 7}
+    def test_older_schema_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "v2.db")
+            path = os.path.join(tmp, "old.db")
             conn = sqlite3.connect(path)
-            conn.execute(self.V1_DDL % ", bot_config TEXT")
-            self._insert(conn, "p1", "strategy_fkk", "2026-06-02T10:00:00", json.dumps(config_a))
-            self._insert(conn, "p2", "strategy_fkk", "2026-06-01T10:00:00", json.dumps(config_a))
-            self._insert(conn, "p3", "strategy_fkk", "2026-06-03T10:00:00", json.dumps(config_b))
+            conn.execute("CREATE TABLE virtual_positions (position_id TEXT PRIMARY KEY)")
+            conn.execute("PRAGMA user_version = 3")
             conn.commit()
             conn.close()
 
-            pm = PositionManager(path, logging.getLogger("test_order_service"))
+            with self.assertRaises(sqlite3.DatabaseError) as ctx:
+                PositionManager(path, logging.getLogger("test_order_service"))
+            self.assertIn("incompatible schema version", str(ctx.exception))
 
-            version_a = config_version_id(config_a)
-            self.assertEqual(pm.get_position("p1").bot_version_id, version_a)
-            self.assertEqual(pm.get_position("p2").bot_version_id, version_a)
-            self.assertEqual(pm.get_position("p3").bot_version_id, config_version_id(config_b))
-            self.assertEqual(len(pm.get_bot_versions("strategy_fkk")), 2)
-            self.assertEqual(pm.get_bot_version("strategy_fkk", version_a)["valid_from"],
-                             "2026-06-01T10:00:00")  # the earliest position using it
-            self.assertEqual(pm.get_bot_version("strategy_fkk", version_a)["config"], config_a)
-            conn = sqlite3.connect(path)
-            try:
-                columns = {r[1] for r in conn.execute("PRAGMA table_info(virtual_positions)")}
-            finally:
-                conn.close()
-            self.assertNotIn("bot_config", columns)
+    def test_entry_latch_consumption(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "latch.db")
+            pm = PositionManager(path, logging.getLogger("test_order_service"))
+            self.assertFalse(pm.is_entry_latched("bot1", "2026-11-03"))
+            self.assertTrue(pm.consume_entry_latch("bot1", "2026-11-03", "test trigger"))
+            self.assertTrue(pm.is_entry_latched("bot1", "2026-11-03"))
+            # Second consumption fails
+            self.assertFalse(pm.consume_entry_latch("bot1", "2026-11-03", "second trigger"))
+            # Different date succeeds
+            self.assertTrue(pm.consume_entry_latch("bot1", "2026-11-04"))
+            # Different bot succeeds
+            self.assertTrue(pm.consume_entry_latch("bot2", "2026-11-03"))
+
+
+class TestOrderServiceV4Features(OrderServiceTestCase):
+    def test_cannot_modify_terminal_order(self):
+        p = self.new_position()
+        trade = self.place(p, LimitOrder("BUY", 1, 1.0), ROLE_OPEN)
+        self.set_status(trade, "Filled", filled=1, avg=1.0)
+        with self.assertRaises(ValueError) as ctx:
+            self.service.modify_order(self.ib, trade, limit_price=1.1)
+        self.assertIn("Cannot modify terminal order", str(ctx.exception))
+
+    def test_racing_second_fill_moves_position_to_needs_reconciliation(self):
+        p = self.new_position()
+        trade_open = self.place(p, LimitOrder("BUY", 1, 1.0), ROLE_OPEN)
+        self.set_status(trade_open, "Filled", filled=1, avg=1.0)
+        self.assertEqual(self.pm.get_position(p.position_id).status, "OPEN")
+
+        tp = self.place(p, LimitOrder("SELL", 1, 1.5), ROLE_TAKE_PROFIT)
+        sl = self.place(p, StopOrder("SELL", 1, 0.5), ROLE_STOP_LOSS)
+
+        # TP fills -> position CLOSED
+        self.set_status(tp, "Filled", filled=1, avg=1.5)
+        self.assertEqual(self.pm.get_position(p.position_id).status, "CLOSED")
+
+        # Racing SL fill on closed position -> moves to NEEDS_RECONCILIATION
+        self.set_status(sl, "Filled", filled=1, avg=0.5)
+        self.assertEqual(self.pm.get_position(p.position_id).status, "NEEDS_RECONCILIATION")
+
 
 
 if __name__ == "__main__":

@@ -11,7 +11,12 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 import logging
 
-from framework.db_schema import init_schema, register_bot_version, utc_now
+from framework.db_schema import (
+    EXPOSED_POSITION_STATUSES,
+    init_schema,
+    register_bot_version,
+    utc_now,
+)
 
 
 class VirtualPosition:
@@ -23,44 +28,90 @@ class VirtualPosition:
         self,
         position_id: str,
         bot_id: str,
-        status: str,
-        underlying_symbol: str,
-        expiration: str,
-        legs_data: Dict[str, Any],
-        quantity: int,
-        opening_order_ref: str,
-        opening_fill_price: Optional[float] = None,
+        status: str = "ENTRY_PENDING",
+        underlying_symbol: str = "",
+        quantity: int = 1,
+        opening_order_ref: str = "",
+        multiplier: float = 100.0,
+        signed_entry_price: Optional[float] = None,
+        underlying_entry_price: Optional[float] = None,
         opening_fill_time: Optional[str] = None,
-        tp_order_id: Optional[int] = None,
-        sl_order_id: Optional[int] = None,
-        exit_conditions: Optional[List[Dict[str, Any]]] = None,
-        initial_greeks: Optional[Dict[str, float]] = None,
+        close_before_first_expiry: bool = False,
+        first_expiry_cutoff: Optional[str] = None,
+        soft_exit_state: Optional[str] = None,
         closing_fill_price: Optional[float] = None,
         closing_fill_time: Optional[str] = None,
         created_at: Optional[str] = None,
         updated_at: Optional[str] = None,
-        bot_version_id: Optional[str] = None
+        bot_version_id: Optional[str] = None,
+        legs: Optional[List[Dict[str, Any]]] = None,
+        # Backward compatibility keyword args
+        expiration: Optional[str] = None,
+        legs_data: Optional[Dict[str, Any]] = None,
+        tp_order_id: Optional[int] = None,
+        sl_order_id: Optional[int] = None,
+        exit_conditions: Optional[List[Dict[str, Any]]] = None,
+        initial_greeks: Optional[Dict[str, float]] = None,
+        opening_fill_price: Optional[float] = None,
     ):
         self.position_id = position_id
         self.bot_id = bot_id
-        self.status = status  # PENDING, OPEN, CLOSED, CANCELLED (opening order never filled)
+        # Normalize old PENDING to ENTRY_PENDING
+        self.status = "ENTRY_PENDING" if status == "PENDING" else status
         self.underlying_symbol = underlying_symbol
-        self.expiration = expiration
-        self.legs_data = legs_data  # JSON serializable dict with leg details
         self.quantity = quantity
         self.opening_order_ref = opening_order_ref
-        self.opening_fill_price = opening_fill_price
+        self.multiplier = multiplier
+        self.signed_entry_price = signed_entry_price if signed_entry_price is not None else opening_fill_price
+        self.underlying_entry_price = underlying_entry_price
         self.opening_fill_time = opening_fill_time
-        self.tp_order_id = tp_order_id
-        self.sl_order_id = sl_order_id
-        self.exit_conditions = exit_conditions or []
-        self.initial_greeks = initial_greeks or {}
+        self.close_before_first_expiry = close_before_first_expiry
+        self.first_expiry_cutoff = first_expiry_cutoff
+        self.soft_exit_state = soft_exit_state
         self.closing_fill_price = closing_fill_price
         self.closing_fill_time = closing_fill_time
         self.created_at = created_at or utc_now()
         self.updated_at = updated_at or utc_now()
-        # Version of the bot's configuration this position was opened with (bots.version_id)
         self.bot_version_id = bot_version_id
+        self.legs = legs if legs is not None else (legs_data.get("legs", []) if isinstance(legs_data, dict) else [])
+        self._expiration = expiration
+        self.tp_order_id = tp_order_id
+        self.sl_order_id = sl_order_id
+        self.exit_conditions = exit_conditions or []
+        self.initial_greeks = initial_greeks or {}
+
+    @property
+    def expiration(self) -> str:
+        if self.legs:
+            expiries = [leg.get("expiry") or leg.get("expiration") or "" for leg in self.legs]
+            valid_expiries = [e for e in expiries if e]
+            if valid_expiries:
+                return min(valid_expiries)
+        return self._expiration or ""
+
+    @expiration.setter
+    def expiration(self, val: str) -> None:
+        self._expiration = val
+
+    @property
+    def legs_data(self) -> Dict[str, Any]:
+        return {"legs": self.legs or []}
+
+    @legs_data.setter
+    def legs_data(self, val: Any) -> None:
+        if isinstance(val, dict):
+            self.legs = val.get("legs", [])
+        elif isinstance(val, list):
+            self.legs = val
+
+    @property
+    def opening_fill_price(self) -> Optional[float]:
+        return self.signed_entry_price
+
+    @opening_fill_price.setter
+    def opening_fill_price(self, val: Optional[float]) -> None:
+        self.signed_entry_price = val
+
 
 
 class PositionManager:
@@ -94,272 +145,305 @@ class PositionManager:
             self.logger.error(f"Error initializing database: {e}", exc_info=True)
             raise
     
-    def create_position(self, position: VirtualPosition) -> bool:
-        """
-        Create a new virtual position in the database.
-        
-        Args:
-            position: VirtualPosition object to create
-            
-        Returns:
-            True if successful, False otherwise
-        """
+    def create_position(
+        self, position: VirtualPosition, legs: Optional[List[Dict[str, Any]]] = None
+    ) -> bool:
+        """Create a new virtual position and its legs in the database."""
+        legs_to_insert = legs if legs is not None else (position.legs or [])
+        now = utc_now()
         try:
             conn = self._connect()
-            cursor = conn.cursor()
-            
-            cursor.execute("""
-                INSERT INTO virtual_positions (
-                    position_id, bot_id, bot_version_id, status, underlying_symbol, expiration,
-                    legs_data, quantity, opening_order_ref, opening_fill_price,
-                    opening_fill_time, tp_order_id, sl_order_id, exit_conditions,
-                    initial_greeks, closing_fill_price, closing_fill_time,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                position.position_id,
-                position.bot_id,
-                position.bot_version_id,
-                position.status,
-                position.underlying_symbol,
-                position.expiration,
-                json.dumps(position.legs_data),
-                position.quantity,
-                position.opening_order_ref,
-                position.opening_fill_price,
-                position.opening_fill_time,
-                position.tp_order_id,
-                position.sl_order_id,
-                json.dumps(position.exit_conditions),
-                json.dumps(position.initial_greeks),
-                position.closing_fill_price,
-                position.closing_fill_time,
-                position.created_at,
-                position.updated_at
-            ))
-            
-            conn.commit()
-            conn.close()
-            
-            self.logger.info(f"Created virtual position: {position.position_id}")
-            return True
-            
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("""
+                    INSERT INTO virtual_positions (
+                        position_id, bot_id, bot_version_id, status, underlying_symbol,
+                        quantity, multiplier, opening_order_ref, signed_entry_price,
+                        underlying_entry_price, opening_fill_time, close_before_first_expiry,
+                        first_expiry_cutoff, soft_exit_state, closing_fill_price,
+                        closing_fill_time, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    position.position_id,
+                    position.bot_id,
+                    position.bot_version_id,
+                    position.status,
+                    position.underlying_symbol,
+                    position.quantity,
+                    position.multiplier,
+                    position.opening_order_ref,
+                    position.signed_entry_price,
+                    position.underlying_entry_price,
+                    position.opening_fill_time,
+                    1 if position.close_before_first_expiry else 0,
+                    position.first_expiry_cutoff,
+                    position.soft_exit_state,
+                    position.closing_fill_price,
+                    position.closing_fill_time,
+                    position.created_at,
+                    position.updated_at,
+                ))
+
+                for i, leg in enumerate(legs_to_insert):
+                    leg_id = str(leg.get("leg_id") or leg.get("name") or f"leg_{i+1}")
+                    con_id = int(leg.get("con_id") or 0)
+                    ratio = int(leg.get("ratio") or 1)
+                    action = str(leg.get("action") or ("SELL" if ratio < 0 else "BUY")).upper()
+                    right = str(leg.get("right") or "CALL").upper()
+                    strike = float(leg.get("strike") or 0.0)
+                    expiry = str(leg.get("expiry") or leg.get("expiration") or "")
+                    cutoff = leg.get("last_trade_cutoff")
+                    status = str(leg.get("status") or "OPEN").upper()
+                    filled_qty = int(leg.get("filled_quantity") or 0)
+                    rem_qty = int(leg.get("remaining_quantity") or (position.quantity * abs(ratio)))
+
+                    conn.execute("""
+                        INSERT INTO position_legs (
+                            position_id, leg_id, con_id, ratio, action, right, strike,
+                            expiry, last_trade_cutoff, filled_quantity, remaining_quantity,
+                            status, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        position.position_id, leg_id, con_id, abs(ratio), action, right, strike,
+                        expiry, cutoff, filled_qty, rem_qty, status, now, now
+                    ))
+
+                conn.commit()
+                position.legs = legs_to_insert
+                self.logger.info(f"Created virtual position: {position.position_id}")
+                return True
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            finally:
+                conn.close()
         except Exception as e:
             self.logger.error(f"Error creating position: {e}", exc_info=True)
             return False
     
     def update_position(self, position: VirtualPosition) -> bool:
-        """
-        Update an existing virtual position.
-        
-        Args:
-            position: VirtualPosition object with updated data
-            
-        Returns:
-            True if successful, False otherwise
-        """
+        """Update an existing virtual position."""
         try:
             position.updated_at = utc_now()
-            
             conn = self._connect()
-            cursor = conn.cursor()
-            
-            cursor.execute("""
-                UPDATE virtual_positions SET
-                    bot_id = ?,
-                    bot_version_id = ?,
-                    status = ?,
-                    underlying_symbol = ?,
-                    expiration = ?,
-                    legs_data = ?,
-                    quantity = ?,
-                    opening_order_ref = ?,
-                    opening_fill_price = ?,
-                    opening_fill_time = ?,
-                    tp_order_id = ?,
-                    sl_order_id = ?,
-                    exit_conditions = ?,
-                    initial_greeks = ?,
-                    closing_fill_price = ?,
-                    closing_fill_time = ?,
-                    updated_at = ?
-                WHERE position_id = ?
-            """, (
-                position.bot_id,
-                position.bot_version_id,
-                position.status,
-                position.underlying_symbol,
-                position.expiration,
-                json.dumps(position.legs_data),
-                position.quantity,
-                position.opening_order_ref,
-                position.opening_fill_price,
-                position.opening_fill_time,
-                position.tp_order_id,
-                position.sl_order_id,
-                json.dumps(position.exit_conditions),
-                json.dumps(position.initial_greeks),
-                position.closing_fill_price,
-                position.closing_fill_time,
-                position.updated_at,
-                position.position_id
-            ))
-            
-            conn.commit()
-            conn.close()
-            
-            self.logger.debug(f"Updated virtual position: {position.position_id}")
-            return True
-            
+            try:
+                conn.execute("""
+                    UPDATE virtual_positions SET
+                        bot_id = ?,
+                        bot_version_id = ?,
+                        status = ?,
+                        underlying_symbol = ?,
+                        quantity = ?,
+                        multiplier = ?,
+                        opening_order_ref = ?,
+                        signed_entry_price = ?,
+                        underlying_entry_price = ?,
+                        opening_fill_time = ?,
+                        close_before_first_expiry = ?,
+                        first_expiry_cutoff = ?,
+                        soft_exit_state = ?,
+                        closing_fill_price = ?,
+                        closing_fill_time = ?,
+                        updated_at = ?
+                    WHERE position_id = ?
+                """, (
+                    position.bot_id,
+                    position.bot_version_id,
+                    position.status,
+                    position.underlying_symbol,
+                    position.quantity,
+                    position.multiplier,
+                    position.opening_order_ref,
+                    position.signed_entry_price,
+                    position.underlying_entry_price,
+                    position.opening_fill_time,
+                    1 if position.close_before_first_expiry else 0,
+                    position.first_expiry_cutoff,
+                    position.soft_exit_state,
+                    position.closing_fill_price,
+                    position.closing_fill_time,
+                    position.updated_at,
+                    position.position_id,
+                ))
+                conn.commit()
+                self.logger.debug(f"Updated virtual position: {position.position_id}")
+                return True
+            finally:
+                conn.close()
         except Exception as e:
             self.logger.error(f"Error updating position: {e}", exc_info=True)
             return False
-    
+
     def get_position(self, position_id: str) -> Optional[VirtualPosition]:
-        """
-        Get a virtual position by ID.
-        
-        Args:
-            position_id: Position ID to retrieve
-            
-        Returns:
-            VirtualPosition object or None if not found
-        """
+        """Get a virtual position by ID with its legs and protective orders."""
         try:
             conn = self._connect()
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            cursor.execute("""
-                SELECT * FROM virtual_positions WHERE position_id = ?
-            """, (position_id,))
-            
-            row = cursor.fetchone()
-            conn.close()
-            
+            try:
+                row = conn.execute(
+                    "SELECT * FROM virtual_positions WHERE position_id = ?", (position_id,)
+                ).fetchone()
+            finally:
+                conn.close()
             if row:
-                return self._row_to_position(row)
+                pos = self._row_to_position(row)
+                pos.legs = self.get_position_legs(position_id)
+                orders = self.get_orders_for_position(position_id)
+                for o in orders:
+                    if o.get("role") == "takeprofit" and o.get("order_id"):
+                        pos.tp_order_id = o["order_id"]
+                    elif o.get("role") == "stoploss" and o.get("order_id"):
+                        pos.sl_order_id = o["order_id"]
+                return pos
             return None
-            
         except Exception as e:
             self.logger.error(f"Error getting position: {e}", exc_info=True)
             return None
+
+    def get_position_legs(self, position_id: str) -> List[Dict[str, Any]]:
+        """Get legs for a position."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM position_legs WHERE position_id = ? ORDER BY leg_id",
+                (position_id,)
+            ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
     
     def get_open_positions(self, bot_id: Optional[str] = None) -> List[VirtualPosition]:
-        """
-        Get all open virtual positions.
-        
-        Args:
-            bot_id: Optional bot ID to filter by
-            
-        Returns:
-            List of VirtualPosition objects
-        """
+        """Get all positions currently in exposed states."""
         try:
             conn = self._connect()
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            if bot_id:
-                cursor.execute("""
-                    SELECT * FROM virtual_positions 
-                    WHERE status = 'OPEN' AND bot_id = ?
-                    ORDER BY created_at DESC
-                """, (bot_id,))
-            else:
-                cursor.execute("""
-                    SELECT * FROM virtual_positions 
-                    WHERE status = 'OPEN'
-                    ORDER BY created_at DESC
-                """)
-            
-            rows = cursor.fetchall()
-            conn.close()
-            
-            return [self._row_to_position(row) for row in rows]
-            
+            try:
+                placeholders = ",".join("?" for _ in EXPOSED_POSITION_STATUSES)
+                if bot_id:
+                    cursor = conn.execute(
+                        f"SELECT * FROM virtual_positions WHERE status IN ({placeholders}) AND bot_id = ? ORDER BY created_at DESC",
+                        list(EXPOSED_POSITION_STATUSES) + [bot_id],
+                    )
+                else:
+                    cursor = conn.execute(
+                        f"SELECT * FROM virtual_positions WHERE status IN ({placeholders}) ORDER BY created_at DESC",
+                        list(EXPOSED_POSITION_STATUSES),
+                    )
+                rows = cursor.fetchall()
+            finally:
+                conn.close()
+            positions = []
+            for row in rows:
+                pos = self._row_to_position(row)
+                pos.legs = self.get_position_legs(pos.position_id)
+                positions.append(pos)
+            return positions
         except Exception as e:
             self.logger.error(f"Error getting open positions: {e}", exc_info=True)
             return []
-    
+
+    def get_active_position_count(self, bot_id: str) -> int:
+        """Count virtual positions currently in exposed states for bot_id."""
+        conn = self._connect()
+        try:
+            placeholders = ",".join("?" for _ in EXPOSED_POSITION_STATUSES)
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM virtual_positions WHERE bot_id = ? AND status IN ({placeholders})",
+                [bot_id] + list(EXPOSED_POSITION_STATUSES)
+            ).fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            conn.close()
+
+    def consume_entry_latch(
+        self, bot_id: str, trading_date: str, trigger_reason: str = "", position_id: Optional[str] = None
+    ) -> bool:
+        """Atomically persist an entry latch. Returns True if latched, False if already consumed."""
+        conn = self._connect()
+        try:
+            conn.execute(
+                "INSERT INTO entry_latches (bot_id, trading_date, triggered_at, trigger_reason, position_id) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (bot_id, trading_date, utc_now(), trigger_reason, position_id)
+            )
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+        finally:
+            conn.close()
+
+    def is_entry_latched(self, bot_id: str, trading_date: str) -> bool:
+        """Check if entry latch exists for (bot_id, trading_date)."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM entry_latches WHERE bot_id = ? AND trading_date = ?",
+                (bot_id, trading_date)
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+
     def get_position_by_order_ref(self, order_ref: str) -> Optional[VirtualPosition]:
-        """
-        Get a virtual position by opening order reference.
-        
-        Args:
-            order_ref: Order reference to search for
-            
-        Returns:
-            VirtualPosition object or None if not found
-        """
+        """Get a virtual position by opening order reference."""
         try:
             conn = self._connect()
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            cursor.execute("""
-                SELECT * FROM virtual_positions WHERE opening_order_ref = ?
-            """, (order_ref,))
-            
-            row = cursor.fetchone()
-            conn.close()
-            
+            try:
+                row = conn.execute(
+                    "SELECT * FROM virtual_positions WHERE opening_order_ref = ?",
+                    (order_ref,)
+                ).fetchone()
+            finally:
+                conn.close()
             if row:
-                return self._row_to_position(row)
+                pos = self._row_to_position(row)
+                pos.legs = self.get_position_legs(pos.position_id)
+                return pos
             return None
-            
         except Exception as e:
             self.logger.error(f"Error getting position by order ref: {e}", exc_info=True)
             return None
-    
+
     def _row_to_position(self, row: sqlite3.Row) -> VirtualPosition:
-        """
-        Convert a database row to a VirtualPosition object.
-        
-        Args:
-            row: SQLite row object
-            
-        Returns:
-            VirtualPosition object
-        """
+        """Convert a database row to a VirtualPosition object."""
         return VirtualPosition(
             position_id=row['position_id'],
             bot_id=row['bot_id'],
             status=row['status'],
             underlying_symbol=row['underlying_symbol'],
-            expiration=row['expiration'],
-            legs_data=json.loads(row['legs_data']),
             quantity=row['quantity'],
+            multiplier=row['multiplier'],
             opening_order_ref=row['opening_order_ref'],
-            opening_fill_price=row['opening_fill_price'],
+            signed_entry_price=row['signed_entry_price'],
+            underlying_entry_price=row['underlying_entry_price'],
             opening_fill_time=row['opening_fill_time'],
-            tp_order_id=row['tp_order_id'],
-            sl_order_id=row['sl_order_id'],
-            exit_conditions=json.loads(row['exit_conditions']) if row['exit_conditions'] else [],
-            initial_greeks=json.loads(row['initial_greeks']) if row['initial_greeks'] else {},
+            close_before_first_expiry=bool(row['close_before_first_expiry']),
+            first_expiry_cutoff=row['first_expiry_cutoff'],
+            soft_exit_state=row['soft_exit_state'],
             closing_fill_price=row['closing_fill_price'],
             closing_fill_time=row['closing_fill_time'],
             created_at=row['created_at'],
             updated_at=row['updated_at'],
-            bot_version_id=row['bot_version_id']
+            bot_version_id=row['bot_version_id'],
         )
-    
+
     def _connect(self) -> sqlite3.Connection:
         """Open a connection with row access by name and foreign keys enforced."""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
-    
+
     # ------------------------------------------------------------------
     # Orders
     # ------------------------------------------------------------------
-    
-    # Columns of the orders table that may be changed after the row is created
+
     _ORDER_UPDATABLE_COLUMNS = {
         "order_id", "perm_id", "client_id", "status", "status_message", "error_code",
-        "filled_quantity", "avg_fill_price", "limit_price", "aux_price",
+        "filled_quantity", "avg_fill_price", "limit_price", "aux_price", "account",
+        "oca_group", "oca_type", "trigger_method", "outside_rth", "reference_price",
     }
+
     
     # ------------------------------------------------------------------
     # Bot versions
@@ -432,16 +516,19 @@ class PositionManager:
         """
         now = utc_now()
         row = {
-            "order_id": None, "perm_id": None, "client_id": None, "tif": None,
-            "limit_price": None, "aux_price": None, "modify_count": 0,
-            "status_message": None, "error_code": None,
+            "order_id": None, "perm_id": None, "client_id": None, "account": None,
+            "tif": None, "limit_price": None, "aux_price": None,
+            "oca_group": None, "oca_type": None, "trigger_method": None,
+            "outside_rth": 0, "reference_price": None,
+            "modify_count": 0, "status_message": None, "error_code": None,
             "filled_quantity": 0, "avg_fill_price": None,
             "created_at": now, "updated_at": now,
             **order,
         }
         columns = [
             "order_ref", "position_id", "bot_id", "role", "order_id", "perm_id", "client_id",
-            "action", "order_type", "tif", "total_quantity", "limit_price", "aux_price",
+            "account", "action", "order_type", "tif", "total_quantity", "limit_price", "aux_price",
+            "oca_group", "oca_type", "trigger_method", "outside_rth", "reference_price",
             "modify_count", "contract_json", "status", "status_message", "error_code",
             "filled_quantity", "avg_fill_price", "created_at", "updated_at",
         ]
@@ -626,4 +713,61 @@ class PositionManager:
         except Exception as e:
             self.logger.error(f"Error getting fills for {position_id}: {e}", exc_info=True)
             return []
+
+    # ------------------------------------------------------------------
+    # Order Events (Audit trail)
+    # ------------------------------------------------------------------
+
+    def record_order_event(self, event: Dict[str, Any]) -> bool:
+        """Record an order event in the audit trail."""
+        import uuid
+        now = utc_now()
+        row = {
+            "event_id": event.get("event_id") or uuid.uuid4().hex,
+            "order_ref": event["order_ref"],
+            "position_id": event["position_id"],
+            "bot_id": event["bot_id"],
+            "event_type": event["event_type"],
+            "status": event.get("status"),
+            "filled_quantity": event.get("filled_quantity"),
+            "remaining_quantity": event.get("remaining_quantity"),
+            "avg_fill_price": event.get("avg_fill_price"),
+            "limit_price": event.get("limit_price"),
+            "aux_price": event.get("aux_price"),
+            "error_code": event.get("error_code"),
+            "message": event.get("message"),
+            "timestamp": event.get("timestamp") or now,
+        }
+        cols = list(row.keys())
+        try:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    f"INSERT INTO order_events ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
+                    [row[c] for c in cols]
+                )
+                conn.commit()
+                return True
+            finally:
+                conn.close()
+        except Exception as e:
+            self.logger.error(f"Error recording order event: {e}", exc_info=True)
+            return False
+
+    def get_order_events(self, order_ref: str) -> List[Dict[str, Any]]:
+        """Get audit events for an order, oldest first."""
+        try:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM order_events WHERE order_ref = ? ORDER BY timestamp ASC",
+                    (order_ref,)
+                ).fetchall()
+            finally:
+                conn.close()
+            return [dict(row) for row in rows]
+        except Exception as e:
+            self.logger.error(f"Error getting order events for {order_ref}: {e}", exc_info=True)
+            return []
+
 

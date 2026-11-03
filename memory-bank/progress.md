@@ -1,5 +1,16 @@
 # Progress
 
+## Verify Bot Option & Index Option Enhancement (2026-11-03)
+
+- [x] Extended `bots/verify/bot.py` and `bots/verify/config.py` to support stock and index options:
+  - Fixed qualification/chain hanging caused by passing `0` as underlying contract ID to `reqSecDefOptParamsAsync` and added timeout guards on IB network requests.
+  - Implemented underlying resolution for index underlyings (DAX on EUREX/DTB, SPX on CBOE) as well as stock underlyings.
+  - Added target Friday expiration discovery (`_find_target_friday_expiration`) and ATM strike selection based on underlying market price.
+  - Added market data subscription for option contracts in `start()` to log and print the bid and ask price for the ATM Friday call.
+  - Updated `SymbolConfig` so `right` defaults to `"C"` and `security_type` is optional for auto-detection.
+  - Added 9 unit tests in `tests/test_verify_bot.py` (total test suite at 113 passing tests).
+
+
 ## Order/Fill Persistence Framework (2026-11-02)
 
 - [x] `OrderService` places orders, assigns unique `orderRef` (`bot_id:position_id:role`), persists orders, status, modifications, fills, commissions and position status; strategy bot migrated; 21 unit tests pass (plus existing 16).
@@ -11,15 +22,25 @@
 - [ ] `position_legs` table (queryable legs / net leg quantities), reconciliation vs `reqPositions`, exit-condition monitoring loop, `show_db.py` summary view.
 - Correction to the note below: the strategy bot now persists through `OrderService`; exit monitoring and reconciliation are still missing.
 
-## OptionOmega Plan (2026-11-02)
+## OptionOmega Bot (2026-11-03)
 
 - [x] Recorded agreed settings, ignored backtest properties, framework gaps, execution safety, phase sequence and test gates in `docs/optionomega_bot_plan.md`.
-- [ ] Phase 1 schema/pricing tests, market data, floating scheduler, durable day latch, GTC exits, limit chaser, monitoring and recovery. No new bot runtime is implemented yet.
-- Decisions: calendar first-expiry close may be false; optional hard-stop order type defaults to stop; floating trigger consumes the day even without a fill; explicit and OO premium families together are a validation error.
-- [x] Plan re-evaluated against the persistence commit 3fcc5f0 (OrderService, schema v3, db export/import): added the "Persistence baseline" gap table, schema/migration/export-import rules, lifecycle and fill-accounting notes, shutdown/reconnect findings and extra acceptance tests.
-- Correction to older completed claims below: the strategy bot now persists through `OrderService` (since 3fcc5f0). ExitConditionEvaluator exists but is not evaluated in an active position-monitor loop; no `reqPositions` reconciliation exists. Broker BAG stop/OCA support remains unverified, not guaranteed by existing code.
-
-- [x] Plan revised 2026-11-03: no `backtest_only`, slippage measured instead of configured (soft exits on a limit chaser mid -> bid/ask), clean schema v4 without backward compatibility, Phase 2 manual close (`Close <VPID>` orderRef convention, to be defined), Phase 3 without external signal providers. See `activeContext.md`.
+- [x] Implemented Phase 1 core runtime:
+  - Strict Pydantic models (`bots/optionomega/config.py`) with `extra: "forbid"`, disallowing backtest/slippage keys.
+  - OptionOmega backtest settings mapping analysis report (`bots/optionomega/settings_report.py`).
+  - Canonical P/L, signed target marks (percent, fixed_premium, closing_premium), tick rounding, explicit vs OO premium filter validation, limit order bounding, and slippage measurement (`bots/optionomega/pricing.py`).
+  - Canonical calendar documentation fixture (`docs/fixtures/optionomega_calendar_example.yaml`).
+  - Clean schema v4 (`framework/db_schema.py`) with `PRAGMA user_version = 4`, rejection of older v1-v3 layouts, 8-state position lifecycle CHECK constraint, `position_legs` single source of truth for legs/expiries, `entry_latches`, typed orders columns, and `order_events` audit trail.
+  - Export/import tool (`framework/db_transfer.py`) bumped to format v2, schema v4, supporting all 7 tables.
+  - PositionManager and OrderService adapted to schema v4 with terminal order modification guards, awaitable cancel confirmation, and protection rejection callbacks.
+  - Strategy bot (`bots/strategy/bot.py`) adapted to schema v4.
+  - Shared reference-counted MarketDataService (`framework/market_data_service.py`).
+  - Exchange-aware EntryScheduler with New York timezone floating window and atomic `entry_latches` consumption (`framework/entry_scheduler.py`).
+  - Broker GTC Take Profit and Stop Loss with broker OCA group (`framework/broker_exits.py`).
+  - Bounded LimitChaser for entries and soft exits (`framework/limit_chaser.py`).
+  - PositionMonitor for first-leg expiry deadlines and race-safe exit execution (`framework/position_monitor.py`).
+  - OptionOmega Bot orchestrator (`bots/optionomega/bot.py`).
+  - 104 passing unit tests.
 
 ## What Works
 

@@ -5,7 +5,7 @@ Defines the Pydantic model for validating Verify bot configuration.
 """
 
 from pydantic import BaseModel, Field, field_validator
-from typing import List, Dict, Any, Literal
+from typing import List, Dict, Any, Literal, Optional
 
 
 class SymbolConfig(BaseModel):
@@ -14,6 +14,10 @@ class SymbolConfig(BaseModel):
     exchange: str = Field(default="SMART", description="Exchange (e.g., 'SMART', 'CBOE', 'IBIS')")
     currency: str = Field(default="USD", description="Currency (e.g., 'USD', 'EUR')")
     right: str = Field(default="C", description="Option right for options: 'C' for Call, 'P' for Put")
+    security_type: Optional[Literal["stock", "index", "future"]] = Field(
+        default=None,
+        description="Security type: 'stock', 'index', or 'future'"
+    )
     
     @field_validator('right')
     @classmethod

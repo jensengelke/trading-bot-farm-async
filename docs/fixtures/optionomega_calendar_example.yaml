@@ -1,0 +1,85 @@
+type: optionomega
+name: SPY illustrative calendar
+test_mode: true
+underlying:
+  ticker: SPY
+  sec_type: STK
+  exchange: SMART
+  currency: USD
+legs:
+  - id: front
+    action: sell
+    right: call
+    qty: 1
+    dte: 7
+    strike:
+      type: delta
+      value: 30
+  - id: back
+    action: buy
+    right: call
+    qty: 1
+    dte: 35
+    strike:
+      type: offset
+      parent: front
+      value: 0
+      exact: true
+use_exact_dte: false
+round_strikes_to_nearest: null
+allocation:
+  mode: fixed_quantity
+  quantity: 1
+  max_open_positions: 1
+entry:
+  frequency:
+    type: weekly
+    days: [Mon, Thu, Fri]
+  blackout_dates: []
+  times: []
+  floating_entry:
+    enabled: true
+    min_time: '10:00'
+    max_time: '14:00'
+  conditions:
+    - type: underlying_intraday_move
+      direction: up
+      unit: percent
+      threshold: 0.5
+  min_credit_for_open: null
+  max_credit_for_open: null
+  min_debit_for_open: 1.00
+  max_debit_for_open: 3.00
+  option_omega_min_entry_premium: null
+  option_omega_max_entry_premium: null
+  quote_filter:
+    max_quote_age_seconds: 5
+    max_leg_bid_ask_width: 0.50
+  execution:
+    order_type: limit
+    mid_sampling_seconds: 10
+    starting_offset: 0.00
+    price_increment: 0.01
+    wait_seconds: 20
+    max_attempts: 5
+    max_adverse_price_change: 0.05
+profit_target:
+  type: percent
+  value: 50
+stop_loss:
+  type: percent
+  value: 50
+  order_type: stop
+  trigger_method: default
+  stop_limit_offset: null
+exit:
+  close_full_position_before_first_leg_expires: true
+  close_full_position_before_first_leg_expires_minutes: 20
+  managed_exits: []
+  monitoring:
+    interval_seconds: 60
+    align_to_minute: true
+  execution:
+    price_increment: 0.01
+    wait_seconds: 20
+    max_attempts: 5

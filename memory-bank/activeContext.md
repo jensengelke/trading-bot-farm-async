@@ -1,16 +1,49 @@
 # Active Context
 
-## Framework-Owned Order Persistence (2026-11-02)
+## Verify Bot Option & Index Option Enhancement (2026-11-03)
 
-- New `framework/order_service.py` (`OrderService`, exposed to bots as `self.order_service` on `BotBase`). Bots call `create_position`, `place_order(ib, position_id, contract, order, role)`, `modify_order`, `cancel_order`, `cancel_unprotected_orders`; they no longer call `ib.placeOrder/cancelOrder`, set `orderRef`, or track trades/fills.
-- `orderRef` is framework-assigned and unique: `<bot_id>:<position_id>:<role>` (+`#n` if a role repeats). Roles: `open`, `takeprofit`, `stoploss`, `close`. A caller-provided `orderRef` is overwritten with a warning. `bot_id` = YAML filename stem.
-- Persistence is event-driven (`orderStatusEvent`, `execDetailsEvent`, `commissionReportEvent`), attributed via the orderRef; unknown/foreign refs (manual TWS orders) are ignored. `attach()` also replays `ib.trades()` so restarts catch up. Position lifecycle PENDING -> OPEN (open order done with fills) / CANCELLED -> CLOSED (TP/SL/close order Filled; remaining protective orders are cancelled).
-- Schema lives in `framework/db_schema.py` (`SCHEMA_VERSION = 3`, `PRAGMA user_version`; structural, idempotent migration of any older layout, incl. rebuilding `virtual_positions`). Tables: `bots` (PK `bot_id, version_id`; `version_id` = first 16 hex of SHA-256 of the canonical config JSON, so it is identical on every machine; `valid_from` = first use, only ever moves earlier; `config` JSON), `virtual_positions` (composite FK `bot_id, bot_version_id` -> `bots`; NO config copy per row), `orders` (PK `order_ref`; `status_message`/`error_code` = IB's rejection reason), `fills` (PK IB `exec_id`, incl. commission). A bot version is registered by `OrderService.create_position`.
-- Errors: `place_order` registers the IB orderId with the `RequestTracker` (errors reach the bot's own log) and `OrderService._on_error` stores the reason on the order row (e.g. 201 margin rejection).
-- Export/import (`db_tool.py`, `framework/db_transfer.py`): `python db_tool.py export <db> <file.json[.gz]>` and `import <db> <file> [--dry-run] [--on-conflict newer|keep|overwrite] [--no-backup]`. Import merges by natural keys in ONE transaction (all or nothing, FK-checked), writes `<db>.pre-import-<ts>.db` first, never changes fills except filling a missing commission, `bots.valid_from` = earlier date. Stop the farm before importing into its DB. `data/*.db` are no longer tracked in git (user ran `git rm --cached`).
-- Strategy bot (`bots/strategy/bot.py`) now uses the service for opening, chase modification, cancel, TP/SL and shutdown. Tests: `tests/test_order_service.py` (31) and `tests/test_db_transfer.py` (25), IB mocked; run by module name, e.g. `python -m unittest tests.test_db_transfer tests.test_order_service` (`unittest discover` does not work: `tests` has no `__init__.py`).
-- Not yet verified live/paper: combo (BAG) execution reports (`execDetailsEvent` may arrive for the combo and/or legs; `fills.con_id/sec_type` distinguish), BAG stop/OCA acceptance. Legs are still a JSON blob (`legs_data`); no `position_legs` table, no exit-condition monitoring loop, no reconciliation vs `reqPositions`.
-- Older notes below claiming the strategy bot "does not call persistence methods" are now outdated for the strategy bot.
+- Fixed verify bot hanging during option qualification in `bots/verify/bot.py`:
+  - Resolved `reqSecDefOptParamsAsync` hang by passing qualified non-zero `underlyingConId` (instead of hardcoded `0`, which caused IB warning 321 that never ended the response future) and `futFopExchange=""`.
+  - Added timeout guards (`asyncio.wait_for`) around contract qualification and option chain retrieval.
+  - Implemented intelligent underlying resolution (`_resolve_underlying`) supporting index underlyings (such as DAX on EUREX/DTB, SPX on CBOE) as well as stock underlyings (TSLA, etc.).
+  - Implemented `_find_target_friday_expiration` to target this Friday's expiration (or nearest upcoming Friday / holiday fallback).
+  - Implemented ATM strike selection using live underlying market price with fallback to middle strike.
+  - Added option market data retrieval in `start()` to log and print live bid and ask prices for the ATM Friday call.
+  - Updated `SymbolConfig` in `bots/verify/config.py` with `right` defaulting to `"C"` and `security_type` optional (`None` for auto-detect).
+  - Added comprehensive test suite `tests/test_verify_bot.py` (9 tests, all passing; full suite 113 tests pass).
+
+
+## OptionOmega Bot Implementation (2026-11-03)
+
+- Implemented `docs/optionomega_bot_plan.md` Phase 1 core runtime:
+  - **OptionOmega bot (`bots/optionomega/`)**:
+    - `pricing.py`: Canonical P/L (`M - E`), target marks (`percent`, `fixed_premium`, `closing_premium`), tick rounding, premium filters (explicit credit/debit vs OO side-agnostic), limit constraint (`constrain_entry_limit`), post-execution slippage measurement.
+    - `config.py`: Strict nested Pydantic models (`extra: 'forbid'`). Rejects `backtest_only` and any slippage configuration keys. Validates unique leg IDs, acyclic parent offset links, stop loss stop-limit offset, mutually exclusive premium filter families, floating window times, and first-expiry policy constraints.
+    - `settings_report.py`: Mapping and analysis utility for OptionOmega backtest settings against live runtime disposition.
+    - `bot.py`: Complete `BotBase` orchestrator connecting market data, scheduler, broker exits, limit chaser, and position monitor.
+    - `docs/fixtures/optionomega_calendar_example.yaml`: Canonical documentation fixture.
+  - **Clean Schema v4 (`framework/db_schema.py`)**:
+    - `SCHEMA_VERSION = 4`. Older database files (v1-v3) are rejected on open with clear guidance to archive or delete them (no in-place migration).
+    - Tables: `bots`, `entry_latches`, `virtual_positions` (`status` CHECK constraint across 8 allowed states), `position_legs` (single source of truth for legs and expiries), `orders` (typed columns `account`, `oca_group`, `oca_type`, `trigger_method`, `outside_rth`, `reference_price`), `fills`, `order_events` (audit trail).
+  - **Database Export/Import Tool (`framework/db_transfer.py`)**:
+    - Bumped to `FORMAT_VERSION = 2`, `SCHEMA_VERSION = 4`. Handles all 7 tables in FK dependency order. Rejects older export formats (< 2) or schemas (< 4).
+  - **Framework Services (`framework/`)**:
+    - `market_data_service.py`: Shared reference-counted ticker subscriptions per contract, freshness validation, spread mark and natural bid/ask calculations.
+    - `entry_scheduler.py`: Exchange-aware trading days and floating entry window in `America/New_York` timezone; atomic daily consumption via `entry_latches`.
+    - `broker_exits.py`: Broker GTC Take Profit (LMT) and Stop Loss (STP or STP LMT) with broker OCA group.
+    - `limit_chaser.py`: Bounded entry chase within `max_adverse_price_change`, soft exit chase from mid toward natural side (never beyond natural side, never becomes a market order).
+    - `position_monitor.py`: Earliest leg deadline monitoring (`close_full_position_before_first_leg_expires`), race-safe exit execution (locks position, cancels competing broker exits, awaits confirmation, runs soft exit chaser).
+  - **PositionManager & OrderService**:
+    - Adapted to schema v4. `create_position` takes legs list and persists to `position_legs`.
+    - Guard against modifying terminal orders (`OrderStatus.DoneStates`).
+    - Awaitable cancel confirmation (`wait_for_cancel`).
+    - Protection rejection callback hook (`add_protection_rejected_listener`).
+    - Overfill detection: a racing second fill on an already `CLOSED` position moves it to `NEEDS_RECONCILIATION`.
+  - **Strategy Bot Adaption**:
+    - `bots/strategy/bot.py` adapted to schema v4 (passes legs to `create_position`).
+  - **Test Suite**:
+    - 104 unit tests pass across all test modules.
+
 
 ## OptionOmega Bot Planning (2026-11-02)
 

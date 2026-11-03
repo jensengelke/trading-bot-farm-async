@@ -18,12 +18,13 @@ restart. Events whose ``orderRef`` is unknown to the database (manual TWS orders
 applications) are ignored.
 """
 
+import asyncio
 import json
 import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, NamedTuple, Optional
+from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
 from ib_async import IB, Contract, Order, Trade, Fill, CommissionReport
 from ib_async.order import OrderStatus
@@ -106,6 +107,25 @@ class OrderService:
         # by orderId only, so this maps a rejection back to the order (and its bot).
         self._order_refs_by_id: Dict[int, str] = {}
         self._request_tracker = get_request_tracker()
+        self._on_protection_rejected_listeners: List[Callable] = []
+        self._on_partial_fill_listeners: List[Callable] = []
+
+    def add_protection_rejected_listener(self, listener: Callable) -> None:
+        """Register a callback for protective order rejections: callback(position_id, order_ref, error_code, error_message)."""
+        self._on_protection_rejected_listeners.append(listener)
+
+    def remove_protection_rejected_listener(self, listener: Callable) -> None:
+        if listener in self._on_protection_rejected_listeners:
+            self._on_protection_rejected_listeners.remove(listener)
+
+    def add_partial_fill_listener(self, listener: Callable) -> None:
+        """Register a callback for partial fills: callback(position_id, order_ref, filled_qty, avg_price)."""
+        self._on_partial_fill_listeners.append(listener)
+
+    def remove_partial_fill_listener(self, listener: Callable) -> None:
+        if listener in self._on_partial_fill_listeners:
+            self._on_partial_fill_listeners.remove(listener)
+
 
     # ------------------------------------------------------------------
     # Event wiring
@@ -159,34 +179,60 @@ class OrderService:
         bot_id: str,
         bot_config: Dict[str, Any],
         underlying_symbol: str,
-        expiration: str,
-        legs_data: Dict[str, Any],
-        quantity: int,
-        exit_conditions: Optional[List[Dict[str, Any]]] = None,
-        initial_greeks: Optional[Dict[str, float]] = None,
+        *args: Any,
+        legs: Optional[List[Dict[str, Any]]] = None,
+        quantity: int = 1,
+        multiplier: float = 100.0,
+        close_before_first_expiry: bool = False,
+        first_expiry_cutoff: Optional[str] = None,
+        soft_exit_state: Optional[str] = None,
+        expiration: Optional[str] = None,
+        legs_data: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
     ) -> VirtualPosition:
         """
-        Create and persist a PENDING virtual position owned by ``bot_id``.
+        Create and persist an ENTRY_PENDING virtual position owned by ``bot_id``.
 
         ``bot_config`` is stored once as a bot version (bots table); the position only
         references that version.
         """
+        if args:
+            if isinstance(args[0], (list, tuple)):
+                legs = list(args[0])
+                if len(args) > 1 and isinstance(args[1], (int, float)):
+                    quantity = int(args[1])
+            elif isinstance(args[0], str):
+                expiration = args[0]
+                if len(args) > 1:
+                    if isinstance(args[1], dict):
+                        legs_data = args[1]
+                    elif isinstance(args[1], list):
+                        legs = args[1]
+                if len(args) > 2 and isinstance(args[2], (int, float)):
+                    quantity = int(args[2])
+
+        if legs is None and legs_data is not None:
+            legs = legs_data.get("legs", [])
         position = VirtualPosition(
             position_id=uuid.uuid4().hex,
             bot_id=bot_id,
-            status="PENDING",
+            status="ENTRY_PENDING",
             underlying_symbol=underlying_symbol,
-            expiration=expiration,
-            legs_data=legs_data,
             quantity=quantity,
             opening_order_ref="",
-            exit_conditions=exit_conditions,
-            initial_greeks=initial_greeks,
+            multiplier=multiplier,
+            close_before_first_expiry=close_before_first_expiry,
+            first_expiry_cutoff=first_expiry_cutoff,
+            soft_exit_state=soft_exit_state,
             bot_version_id=self.position_manager.register_bot_version(bot_id, bot_config),
+            legs=legs or [],
+            expiration=expiration,
+            **kwargs,
         )
-        if not self.position_manager.create_position(position):
+        if not self.position_manager.create_position(position, legs=legs):
             raise RuntimeError(f"Could not persist virtual position for bot {bot_id}")
         return position
+
 
     def _set_position_status(self, position_id: str, status: str, **changes: Any) -> None:
         position = self.position_manager.get_position(position_id)
@@ -203,7 +249,8 @@ class OrderService:
     # ------------------------------------------------------------------
 
     def place_order(
-        self, ib: IB, position_id: str, contract: Contract, order: Order, role: str
+        self, ib: IB, position_id: str, contract: Contract, order: Order, role: str,
+        reference_price: Optional[float] = None
     ) -> Trade:
         """
         Place an order for a virtual position.
@@ -242,10 +289,28 @@ class OrderService:
             "aux_price": _price_or_none(order.auxPrice),
             "contract_json": self._contract_json(contract),
             "status": "PendingSubmit",
-            "client_id": ib.client.clientId,
+            "client_id": ib.client.clientId if hasattr(ib, "client") and isinstance(getattr(ib.client, "clientId", None), int) else None,
+            "account": order.account or None,
+            "oca_group": order.ocaGroup or None,
+            "oca_type": order.ocaType if order.ocaGroup else None,
+            "trigger_method": order.triggerMethod or None,
+            "outside_rth": 1 if order.outsideRth else 0,
+            "reference_price": reference_price,
         })
         if not stored:
             raise RuntimeError(f"Could not persist order {order_ref}; order not sent")
+
+        self.position_manager.record_order_event({
+            "order_ref": order_ref,
+            "position_id": position_id,
+            "bot_id": position.bot_id,
+            "event_type": "placed",
+            "status": "PendingSubmit",
+            "filled_quantity": 0,
+            "remaining_quantity": float(order.totalQuantity),
+            "limit_price": _price_or_none(order.lmtPrice),
+            "aux_price": _price_or_none(order.auxPrice),
+        })
 
         try:
             trade = ib.placeOrder(contract, order)
@@ -259,6 +324,7 @@ class OrderService:
         self.position_manager.update_order(order_ref, order_id=order.orderId)
         self._link_order_to_position(position_id, role, order_ref, order.orderId)
         return trade
+
 
     def _track_order(self, order_id: int, order_ref: str, bot_id: str) -> None:
         """
@@ -278,6 +344,9 @@ class OrderService:
         order_ref = trade.order.orderRef
         if parse_order_ref(order_ref) is None:
             raise ValueError(f"Order '{order_ref}' was not placed through the framework")
+        stored = self.position_manager.get_order(order_ref)
+        if stored and stored.get("status") in OrderStatus.DoneStates:
+            raise ValueError(f"Cannot modify terminal order {order_ref} with status {stored['status']}")
         if limit_price is not None:
             trade.order.lmtPrice = limit_price
         if aux_price is not None:
@@ -288,11 +357,44 @@ class OrderService:
             _price_or_none(trade.order.lmtPrice),
             _price_or_none(trade.order.auxPrice),
         )
+        if stored:
+            self.position_manager.record_order_event({
+                "order_ref": order_ref,
+                "position_id": stored["position_id"],
+                "bot_id": stored["bot_id"],
+                "event_type": "modified",
+                "status": stored.get("status"),
+                "limit_price": _price_or_none(trade.order.lmtPrice),
+                "aux_price": _price_or_none(trade.order.auxPrice),
+            })
         return modified
 
     def cancel_order(self, ib: IB, trade: Trade) -> None:
         """Cancel a framework order. The final status is persisted from IB's status event."""
+        order_ref = trade.order.orderRef
+        stored = self._known_order(order_ref)
+        if stored:
+            self.position_manager.record_order_event({
+                "order_ref": order_ref,
+                "position_id": stored["position_id"],
+                "bot_id": stored["bot_id"],
+                "event_type": "cancel_requested",
+                "status": stored.get("status"),
+            })
         ib.cancelOrder(trade.order)
+
+    async def wait_for_cancel(
+        self, order_ref: str, timeout: float = 10.0, poll_interval: float = 0.1
+    ) -> bool:
+        """Wait until order cancellation reaches a terminal status or timeout."""
+        start = asyncio.get_event_loop().time()
+        while asyncio.get_event_loop().time() - start < timeout:
+            stored = self.position_manager.get_order(order_ref)
+            if stored and stored.get("status") in OrderStatus.DoneStates:
+                return True
+            await asyncio.sleep(poll_interval)
+        return False
+
 
     def cancel_unprotected_orders(self, ib: IB, bot_id: str) -> List[str]:
         """
@@ -371,6 +473,27 @@ class OrderService:
                 order_ref, status_message=error_string, error_code=error_code
             )
             self.logger.info(f"Order {order_ref}: IB error {error_code}: {error_string}")
+
+            stored = self.position_manager.get_order(order_ref)
+            if stored:
+                self.position_manager.record_order_event({
+                    "order_ref": order_ref,
+                    "position_id": stored["position_id"],
+                    "bot_id": stored["bot_id"],
+                    "event_type": "error",
+                    "status": stored.get("status"),
+                    "error_code": error_code,
+                    "message": error_string,
+                })
+
+            parts = parse_order_ref(order_ref)
+            if parts and parts.role in PROTECTIVE_ROLES:
+                pos_id = stored["position_id"] if stored else parts.position_id
+                for listener in self._on_protection_rejected_listeners:
+                    try:
+                        listener(pos_id, order_ref, error_code, error_string)
+                    except Exception as e:
+                        self.logger.error(f"Error in protection rejected listener: {e}", exc_info=True)
         except Exception as e:
             self.logger.error(f"Error persisting order error: {e}", exc_info=True)
 
@@ -401,6 +524,25 @@ class OrderService:
             fields["avg_fill_price"] = float(status.avgFillPrice)
         self.position_manager.update_order(order_ref, **fields)
 
+        self.position_manager.record_order_event({
+            "order_ref": order_ref,
+            "position_id": stored["position_id"],
+            "bot_id": stored["bot_id"],
+            "event_type": "status",
+            "status": status.status,
+            "filled_quantity": float(status.filled),
+            "remaining_quantity": float(status.remaining),
+            "avg_fill_price": _price_or_none(status.avgFillPrice),
+        })
+
+        # Partial fill notification
+        if 0 < status.filled < trade.order.totalQuantity and status.status not in OrderStatus.DoneStates:
+            for listener in self._on_partial_fill_listeners:
+                try:
+                    listener(stored["position_id"], order_ref, float(status.filled), float(status.avgFillPrice))
+                except Exception as e:
+                    self.logger.error(f"Error in partial fill listener: {e}", exc_info=True)
+
         if status.status in OrderStatus.DoneStates:
             self._apply_final_status(trade, stored, status)
 
@@ -413,17 +555,17 @@ class OrderService:
         filled = float(status.filled)
         when = self._last_fill_time(trade) or _utc_now()
 
-        if role == ROLE_OPEN and position.status == "PENDING":
+        if role == ROLE_OPEN and position.status in ("ENTRY_PENDING", "PENDING"):
             if filled > 0:
                 position.status = "OPEN"
                 position.quantity = int(filled)
-                position.opening_fill_price = float(status.avgFillPrice)
+                position.signed_entry_price = float(status.avgFillPrice)
                 position.opening_fill_time = when
             else:
                 position.status = "CANCELLED"
             self.position_manager.update_position(position)
             self.logger.info(f"Virtual position {position.position_id} is now {position.status}")
-        elif role in CLOSING_ROLES and position.status == "OPEN" and status.status == "Filled":
+        elif role in CLOSING_ROLES and position.status in ("OPEN", "EXIT_WORKING", "EXIT_CANCEL_PENDING") and status.status == "Filled":
             position.status = "CLOSED"
             position.closing_fill_price = float(status.avgFillPrice)
             position.closing_fill_time = when
@@ -432,6 +574,13 @@ class OrderService:
                 f"Virtual position {position.position_id} is now CLOSED by {stored['order_ref']}"
             )
             self._cancel_remaining_orders(position.position_id, stored["order_ref"])
+        elif role in CLOSING_ROLES and position.status == "CLOSED" and status.status == "Filled":
+            position.status = "NEEDS_RECONCILIATION"
+            self.position_manager.update_position(position)
+            self.logger.critical(
+                f"Virtual position {position.position_id} experienced racing second fill; set to NEEDS_RECONCILIATION"
+            )
+
 
     def _cancel_remaining_orders(self, position_id: str, except_order_ref: str) -> None:
         """A closed position must not keep a live stop loss / take profit (no OCA group)."""

@@ -1,26 +1,22 @@
 """
-Database schema
+Database schema v4.
 
-Creates and migrates the SQLite schema shared by PositionManager and the export/import tool.
+Creates and manages the clean SQLite schema v4 shared by PositionManager, OrderService,
+and the export/import tool.
 
 Tables
 ------
-bots               one row per version of a bot's configuration. ``version_id`` is a hash of
-                   the canonical config, so the same configuration gets the same id on every
-                   machine (which is what makes databases mergeable). ``valid_from`` is when
-                   the version was first used.
-virtual_positions  one row per position opened by a bot; points to the bot version it was
-                   opened with via the composite foreign key (bot_id, bot_version_id).
-orders             every order placed by the framework, keyed by its unique orderRef.
-fills              every execution of those orders, keyed by IB's execId.
+bots               Configuration versions keyed by (bot_id, version_id).
+entry_latches      Once-per-day floating entry latch keyed by (bot_id, trading_date).
+virtual_positions  Virtual positions with strict lifecycle status CHECK constraint.
+position_legs      Per-leg contract details, ratio, expiry, status, keyed by (position_id, leg_id).
+orders             Framework-tracked orders keyed by unique order_ref.
+fills              Execution fills reported by IB, keyed by exec_id.
+order_events       Append-only audit trail of order events, keyed by UUID event_id.
 
-``PRAGMA user_version`` holds SCHEMA_VERSION. Migrations are structural (they look at the
-existing columns), so databases created by any earlier layout are upgraded in place:
-
-  1  virtual_positions only
-  2  + orders, fills, virtual_positions.bot_config (JSON copy of the config on every row)
-  3  + bots; virtual_positions.bot_version_id replaces bot_config;
-       orders.status_message / error_code (why IB rejected or cancelled an order)
+PRAGMA user_version holds SCHEMA_VERSION (4).
+Older database layouts (v1-v3) are rejected on open with a clear error; they are not
+migrated in place.
 """
 
 import hashlib
@@ -31,14 +27,35 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Union
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
-VIRTUAL_POSITION_COLUMNS = [
-    "position_id", "bot_id", "bot_version_id", "status", "underlying_symbol", "expiration",
-    "legs_data", "quantity", "opening_order_ref", "opening_fill_price", "opening_fill_time",
-    "tp_order_id", "sl_order_id", "exit_conditions", "initial_greeks", "closing_fill_price",
-    "closing_fill_time", "created_at", "updated_at",
-]
+ALLOWED_POSITION_STATUSES = (
+    "ENTRY_PENDING",
+    "OPEN",
+    "EXIT_CANCEL_PENDING",
+    "EXIT_WORKING",
+    "PARTIALLY_EXPIRED",
+    "NEEDS_RECONCILIATION",
+    "CLOSED",
+    "CANCELLED",
+)
+
+EXPOSED_POSITION_STATUSES = (
+    "ENTRY_PENDING",
+    "OPEN",
+    "EXIT_CANCEL_PENDING",
+    "EXIT_WORKING",
+    "PARTIALLY_EXPIRED",
+    "NEEDS_RECONCILIATION",
+)
+
+ALLOWED_LEG_STATUSES = (
+    "OPEN",
+    "EXPIRED",
+    "EXERCISED",
+    "ASSIGNED",
+    "CLOSED",
+)
 
 
 def utc_now() -> str:
@@ -66,32 +83,64 @@ _BOTS_DDL = """
     )
 """
 
+_ENTRY_LATCHES_DDL = """
+    CREATE TABLE IF NOT EXISTS entry_latches (
+        bot_id TEXT NOT NULL,
+        trading_date TEXT NOT NULL,
+        triggered_at TEXT NOT NULL,
+        trigger_reason TEXT,
+        position_id TEXT,
+        PRIMARY KEY (bot_id, trading_date)
+    )
+"""
 
-def _virtual_positions_ddl(table: str) -> str:
-    return f"""
-        CREATE TABLE {table} (
-            position_id TEXT PRIMARY KEY,
-            bot_id TEXT NOT NULL,
-            bot_version_id TEXT,
-            status TEXT NOT NULL,
-            underlying_symbol TEXT NOT NULL,
-            expiration TEXT NOT NULL,
-            legs_data TEXT NOT NULL,
-            quantity INTEGER NOT NULL,
-            opening_order_ref TEXT NOT NULL,
-            opening_fill_price REAL,
-            opening_fill_time TEXT,
-            tp_order_id INTEGER,
-            sl_order_id INTEGER,
-            exit_conditions TEXT,
-            initial_greeks TEXT,
-            closing_fill_price REAL,
-            closing_fill_time TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY (bot_id, bot_version_id) REFERENCES bots(bot_id, version_id)
-        )
-    """
+_VIRTUAL_POSITIONS_DDL = """
+    CREATE TABLE IF NOT EXISTS virtual_positions (
+        position_id TEXT PRIMARY KEY,
+        bot_id TEXT NOT NULL,
+        bot_version_id TEXT,
+        status TEXT NOT NULL CHECK(status IN (
+            'ENTRY_PENDING', 'OPEN', 'EXIT_CANCEL_PENDING', 'EXIT_WORKING',
+            'PARTIALLY_EXPIRED', 'NEEDS_RECONCILIATION', 'CLOSED', 'CANCELLED'
+        )),
+        underlying_symbol TEXT NOT NULL,
+        quantity INTEGER NOT NULL,
+        multiplier REAL NOT NULL DEFAULT 100,
+        opening_order_ref TEXT NOT NULL,
+        signed_entry_price REAL,
+        underlying_entry_price REAL,
+        opening_fill_time TEXT,
+        close_before_first_expiry INTEGER NOT NULL DEFAULT 0,
+        first_expiry_cutoff TEXT,
+        soft_exit_state TEXT,
+        closing_fill_price REAL,
+        closing_fill_time TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (bot_id, bot_version_id) REFERENCES bots(bot_id, version_id)
+    )
+"""
+
+_POSITION_LEGS_DDL = """
+    CREATE TABLE IF NOT EXISTS position_legs (
+        position_id TEXT NOT NULL REFERENCES virtual_positions(position_id),
+        leg_id TEXT NOT NULL,
+        con_id INTEGER NOT NULL,
+        ratio INTEGER NOT NULL,
+        action TEXT NOT NULL,
+        right TEXT NOT NULL,
+        strike REAL NOT NULL,
+        expiry TEXT NOT NULL,
+        last_trade_cutoff TEXT,
+        filled_quantity INTEGER NOT NULL DEFAULT 0,
+        remaining_quantity INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL CHECK(status IN ('OPEN', 'EXPIRED', 'EXERCISED', 'ASSIGNED', 'CLOSED')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (position_id, leg_id)
+    )
+"""
+
 
 
 _ORDERS_DDL = """
@@ -103,12 +152,18 @@ _ORDERS_DDL = """
         order_id INTEGER,
         perm_id INTEGER,
         client_id INTEGER,
+        account TEXT,
         action TEXT NOT NULL,
         order_type TEXT NOT NULL,
         tif TEXT,
         total_quantity REAL NOT NULL,
         limit_price REAL,
         aux_price REAL,
+        oca_group TEXT,
+        oca_type INTEGER,
+        trigger_method INTEGER,
+        outside_rth INTEGER NOT NULL DEFAULT 0,
+        reference_price REAL,
         modify_count INTEGER NOT NULL DEFAULT 0,
         contract_json TEXT NOT NULL,
         status TEXT NOT NULL,
@@ -121,8 +176,6 @@ _ORDERS_DDL = """
     )
 """
 
-# Executions reported by IB for framework orders, keyed by IB's execId. For combo orders IB
-# may report the combo and/or its legs; con_id/sec_type identify which.
 _FILLS_DDL = """
     CREATE TABLE IF NOT EXISTS fills (
         exec_id TEXT PRIMARY KEY,
@@ -150,36 +203,43 @@ _FILLS_DDL = """
     )
 """
 
+_ORDER_EVENTS_DDL = """
+    CREATE TABLE IF NOT EXISTS order_events (
+        event_id TEXT PRIMARY KEY,
+        order_ref TEXT NOT NULL REFERENCES orders(order_ref),
+        position_id TEXT NOT NULL REFERENCES virtual_positions(position_id),
+        bot_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        status TEXT,
+        filled_quantity REAL,
+        remaining_quantity REAL,
+        avg_fill_price REAL,
+        limit_price REAL,
+        aux_price REAL,
+        error_code INTEGER,
+        message TEXT,
+        timestamp TEXT NOT NULL
+    )
+"""
+
 _INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_bot_status ON virtual_positions(bot_id, status)",
     "CREATE INDEX IF NOT EXISTS idx_status ON virtual_positions(status)",
+    "CREATE INDEX IF NOT EXISTS idx_legs_position ON position_legs(position_id)",
     "CREATE INDEX IF NOT EXISTS idx_orders_position ON orders(position_id)",
     "CREATE INDEX IF NOT EXISTS idx_orders_bot_status ON orders(bot_id, status)",
     "CREATE INDEX IF NOT EXISTS idx_fills_position ON fills(position_id)",
     "CREATE INDEX IF NOT EXISTS idx_fills_order ON fills(order_ref)",
+    "CREATE INDEX IF NOT EXISTS idx_order_events_order ON order_events(order_ref)",
+    "CREATE INDEX IF NOT EXISTS idx_order_events_position ON order_events(position_id)",
 ]
 
-
-def _columns(conn: sqlite3.Connection, table: str) -> List[str]:
-    return [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    return conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
-    ).fetchone() is not None
 
 
 def register_bot_version(
     conn: sqlite3.Connection, bot_id: str, config: Dict[str, Any], valid_from: str = None
 ) -> str:
-    """
-    Make sure the bots table has a row for this configuration and return its version id.
-
-    The same configuration always yields the same version id. A configuration that was used
-    before (also after switching to another one and back) keeps its original valid_from; an
-    explicitly given earlier valid_from (migration of old rows) moves it back.
-    """
+    """Make sure the bots table has a row for this configuration and return its version id."""
     version_id = config_version_id(config)
     valid_from = valid_from or utc_now()
     conn.execute(
@@ -193,68 +253,57 @@ def register_bot_version(
     return version_id
 
 
-def _rebuild_virtual_positions(conn: sqlite3.Connection, logger: logging.Logger) -> None:
-    """
-    Replace virtual_positions by the version-3 layout (bot_version_id + composite foreign key).
-
-    Rows that carry a bot_config JSON copy get a bots row (valid_from = the position's
-    created_at, so the earliest position using a config dates the version) and point to it.
-    """
-    old_columns = _columns(conn, "virtual_positions")
-    has_config = "bot_config" in old_columns
-    rows = conn.execute("SELECT * FROM virtual_positions").fetchall()
-
-    conn.execute(_virtual_positions_ddl("virtual_positions_new"))
-    for row in rows:
-        values = dict(zip(old_columns, row))
-        version_id = None
-        raw_config = values.get("bot_config") if has_config else None
-        if raw_config:
-            try:
-                config = json.loads(raw_config)
-            except ValueError:
-                config = None
-            if config:
-                version_id = register_bot_version(
-                    conn, values["bot_id"], config, valid_from=values["created_at"]
-                )
-        values["bot_version_id"] = version_id
-        conn.execute(
-            f"INSERT INTO virtual_positions_new ({', '.join(VIRTUAL_POSITION_COLUMNS)}) "
-            f"VALUES ({', '.join('?' for _ in VIRTUAL_POSITION_COLUMNS)})",
-            [values.get(column) for column in VIRTUAL_POSITION_COLUMNS]
-        )
-    conn.execute("DROP TABLE virtual_positions")
-    conn.execute("ALTER TABLE virtual_positions_new RENAME TO virtual_positions")
-    logger.info(f"Migrated virtual_positions to schema {SCHEMA_VERSION} ({len(rows)} rows)")
-
-
 def init_schema(db_path: Union[str, Path], logger: logging.Logger) -> None:
-    """Create the schema in ``db_path`` or upgrade an older layout in place (idempotent)."""
-    conn = sqlite3.connect(db_path, isolation_level=None)  # explicit transaction below
+    """
+    Initialize SQLite schema v4 in db_path.
+
+    Rejects older database layouts (< 4) with sqlite3.DatabaseError.
+    Fresh databases are created with clean v4 schema.
+    """
+    conn = sqlite3.connect(db_path, isolation_level=None)
     try:
-        # Must be set outside a transaction; required while tables are rebuilt.
-        conn.execute("PRAGMA foreign_keys = OFF")
+        user_version = conn.execute("PRAGMA user_version").fetchone()[0]
+        tables = [
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+        ]
+
+        if user_version == SCHEMA_VERSION:
+            return
+
+        if user_version > SCHEMA_VERSION:
+            raise sqlite3.DatabaseError(
+                f"Database at {db_path} has newer schema version {user_version} > {SCHEMA_VERSION}."
+            )
+
+        if user_version > 0 or len(tables) > 0:
+            raise sqlite3.DatabaseError(
+                f"Database at {db_path} has incompatible schema version {user_version} < {SCHEMA_VERSION}. "
+                f"Schema v4 does not support in-place migration of v1-v3 databases. "
+                f"Please archive or delete older database files."
+            )
+
+        # Fresh database: create clean schema v4
+        conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("BEGIN")
         try:
             conn.execute(_BOTS_DDL)
-            if not _table_exists(conn, "virtual_positions"):
-                conn.execute(_virtual_positions_ddl("virtual_positions"))
-            elif "bot_version_id" not in _columns(conn, "virtual_positions"):
-                _rebuild_virtual_positions(conn, logger)
+            conn.execute(_ENTRY_LATCHES_DDL)
+            conn.execute(_VIRTUAL_POSITIONS_DDL)
+            conn.execute(_POSITION_LEGS_DDL)
             conn.execute(_ORDERS_DDL)
             conn.execute(_FILLS_DDL)
-            order_columns = _columns(conn, "orders")
-            if "status_message" not in order_columns:
-                conn.execute("ALTER TABLE orders ADD COLUMN status_message TEXT")
-            if "error_code" not in order_columns:
-                conn.execute("ALTER TABLE orders ADD COLUMN error_code INTEGER")
+            conn.execute(_ORDER_EVENTS_DDL)
             for statement in _INDEXES:
                 conn.execute(statement)
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             conn.execute("COMMIT")
+            logger.info(f"Initialized clean database schema v4 at {db_path}")
         except BaseException:
             conn.execute("ROLLBACK")
             raise
     finally:
         conn.close()
+

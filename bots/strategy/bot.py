@@ -866,25 +866,23 @@ class Bot(BotBase):
             
             # Create the virtual position this order opens. The framework persists it
             # together with a snapshot of this bot's configuration and assigns the orderRef.
+            legs = [
+                {
+                    "leg_id": leg_config.name,
+                    "con_id": contract.conId,
+                    "ratio": abs(leg_config.ratio),
+                    "action": "SELL" if leg_config.ratio < 0 else "BUY",
+                    "right": contract.right,
+                    "strike": contract.strike,
+                    "expiry": contract.lastTradeDateOrContractMonth,
+                }
+                for leg_config, contract in option_contracts
+            ]
             position = self.order_service.create_position(
                 bot_id=self.bot_id,
                 bot_config=self.config,
                 underlying_symbol=self.validated_config.underlying_symbol,
-                expiration=option_contracts[0][1].lastTradeDateOrContractMonth,
-                legs_data={
-                    "legs": [
-                        {
-                            "name": leg_config.name,
-                            "con_id": contract.conId,
-                            "local_symbol": contract.localSymbol,
-                            "right": contract.right,
-                            "strike": contract.strike,
-                            "expiration": contract.lastTradeDateOrContractMonth,
-                            "ratio": leg_config.ratio,
-                        }
-                        for leg_config, contract in option_contracts
-                    ]
-                },
+                legs=legs,
                 quantity=num_contracts,
                 exit_conditions=[
                     cond.model_dump() for cond in (self.validated_config.exit_conditions or [])

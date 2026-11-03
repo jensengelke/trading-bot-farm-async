@@ -22,18 +22,30 @@ LOGGER = logging.getLogger("test_db_transfer")
 
 
 def seed(db_path, bot_id="strategy_fkk", config=None, position_id="p1", ref_status="Filled",
-         exec_id="E1", updated_at="2026-07-01T10:00:00"):
-    """Create one version, position, order and fill in ``db_path``."""
+         exec_id="E1", updated_at="2026-07-01T10:00:00", trading_date="2026-07-01"):
+    """Create one version, entry latch, position, leg, order, fill and order event in ``db_path``."""
     pm = PositionManager(db_path, LOGGER)
     version_id = pm.register_bot_version(bot_id, config or {"dte": 0})
     conn = pm._connect()
     try:
         conn.execute(
+            "INSERT INTO entry_latches (bot_id, trading_date, triggered_at, trigger_reason, position_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (bot_id, trading_date, "2026-07-01T08:59:00", "test trigger", position_id)
+        )
+        conn.execute(
             "INSERT INTO virtual_positions (position_id, bot_id, bot_version_id, status,"
-            " underlying_symbol, expiration, legs_data, quantity, opening_order_ref, created_at,"
-            " updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (position_id, bot_id, version_id, "OPEN", "SPX", "20260702", "{}", 1,
+            " underlying_symbol, quantity, multiplier, opening_order_ref, created_at,"
+            " updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (position_id, bot_id, version_id, "OPEN", "SPX", 1, 100.0,
              f"{bot_id}:{position_id}:open", "2026-07-01T09:00:00", updated_at))
+        conn.execute(
+            "INSERT INTO position_legs (position_id, leg_id, con_id, ratio, action, right, strike,"
+            " expiry, filled_quantity, remaining_quantity, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (position_id, "leg1", 1001, 1, "BUY", "CALL", 5000.0, "20260702", 1, 0, "OPEN",
+             "2026-07-01T09:00:00", updated_at)
+        )
         conn.execute(
             "INSERT INTO orders (order_ref, position_id, bot_id, role, action, order_type,"
             " total_quantity, contract_json, status, created_at, updated_at)"
@@ -45,6 +57,11 @@ def seed(db_path, bot_id="strategy_fkk", config=None, position_id="p1", ref_stat
             " created_at) VALUES (?,?,?,?,?,?,?,?,?)",
             (exec_id, f"{bot_id}:{position_id}:open", position_id, bot_id,
              "2026-07-01T09:01:00", "BOT", 1, -1.3, "2026-07-01T09:01:00"))
+        conn.execute(
+            "INSERT INTO order_events (event_id, order_ref, position_id, bot_id, event_type, status, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (f"evt_{exec_id}", f"{bot_id}:{position_id}:open", position_id, bot_id, "placed", "PendingSubmit", "2026-07-01T09:00:00")
+        )
         conn.commit()
     finally:
         conn.close()
@@ -55,12 +72,14 @@ def dump(db_path):
     """All rows of all tables, for comparing databases."""
     conn = sqlite3.connect(db_path)
     try:
+        tables = ("bots", "entry_latches", "virtual_positions", "position_legs", "orders", "fills", "order_events")
         return {
             table: conn.execute(f"SELECT * FROM {table} ORDER BY 1, 2").fetchall()
-            for table in ("bots", "virtual_positions", "orders", "fills")
+            for table in tables
         }
     finally:
         conn.close()
+
 
 
 class TransferTestCase(unittest.TestCase):
@@ -80,7 +99,18 @@ class TestExport(TransferTestCase):
         db = self.path("a.db")
         seed(db)
         counts = export_database(db, self.path("a.json"))
-        self.assertEqual(counts, {"bots": 1, "virtual_positions": 1, "orders": 1, "fills": 1})
+        self.assertEqual(
+            counts,
+            {
+                "bots": 1,
+                "entry_latches": 1,
+                "virtual_positions": 1,
+                "position_legs": 1,
+                "orders": 1,
+                "fills": 1,
+                "order_events": 1,
+            },
+        )
         document = json.loads(Path(self.path("a.json")).read_text(encoding="utf-8"))
         self.assertEqual(document["format"], "trading-bot-farm-db-export")
         self.assertEqual(document["tables"]["fills"][0]["exec_id"], "E1")
@@ -111,20 +141,17 @@ class TestExport(TransferTestCase):
         with self.assertRaises(TransferError):
             export_database(self.path("nope.db"), self.path("x.json"))
 
-    def test_old_layout_is_upgraded_before_export(self):
+    def test_old_layout_is_rejected_before_export(self):
         db = self.path("old.db")
         conn = sqlite3.connect(db)
-        conn.execute("""CREATE TABLE virtual_positions (
-            position_id TEXT PRIMARY KEY, bot_id TEXT NOT NULL, status TEXT NOT NULL,
-            underlying_symbol TEXT NOT NULL, expiration TEXT NOT NULL, legs_data TEXT NOT NULL,
-            quantity INTEGER NOT NULL, opening_order_ref TEXT NOT NULL, opening_fill_price REAL,
-            opening_fill_time TEXT, tp_order_id INTEGER, sl_order_id INTEGER, exit_conditions TEXT,
-            initial_greeks TEXT, closing_fill_price REAL, closing_fill_time TEXT,
-            created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""")
+        conn.execute("CREATE TABLE virtual_positions (position_id TEXT PRIMARY KEY)")
+        conn.execute("PRAGMA user_version = 3")
         conn.commit()
         conn.close()
-        counts = export_database(db, self.path("old.json"))
-        self.assertEqual(counts["virtual_positions"], 0)
+        with self.assertRaises(sqlite3.DatabaseError) as ctx:
+            export_database(db, self.path("old.json"))
+        self.assertIn("incompatible schema version", str(ctx.exception))
+
 
 
 class TestImportIntoNewDatabase(TransferTestCase):
@@ -312,6 +339,16 @@ class TestSafety(TransferTestCase):
         Path(self.path("future.json")).write_text(json.dumps(document), encoding="utf-8")
         with self.assertRaises(TransferError):
             read_export(self.path("future.json"))
+
+    def test_file_from_an_older_program_is_rejected(self):
+        seed(self.path("home.db"))
+        export_database(self.path("home.db"), self.path("home.json"))
+        document = json.loads(Path(self.path("home.json")).read_text(encoding="utf-8"))
+        document["schema_version"] = 3
+        Path(self.path("past.json")).write_text(json.dumps(document), encoding="utf-8")
+        with self.assertRaises(TransferError) as ctx:
+            read_export(self.path("past.json"))
+        self.assertIn("Incompatible export file", str(ctx.exception))
 
     def test_unknown_conflict_policy_is_rejected(self):
         seed(self.path("home.db"))
