@@ -1,12 +1,12 @@
 # OptionOmega bot: implementation plan
 
-Status: agreed design; runtime implementation not yet started. Updated 2026-11-02 after the persistence-framework commit `3fcc5f0` (`OrderService`, schema v3, export/import); see section 6, "Persistence baseline".
+Status: agreed design; runtime implementation not yet started. Updated 2026-11-03 (live-only scope, slippage measured instead of configured, clean schema v4, manual-close feature, phase changes). Earlier revision 2026-11-02 after the persistence-framework commit `3fcc5f0` (`OrderService`, schema v3, export/import); see section 6, "Persistence baseline".
 
 ## 1. Goal and boundaries
 
-Create a new `optionomega` bot, leaving `bots/strategy` and its existing YAML semantics unchanged. Match OptionOmega (OO) backtest configuration wherever a meaningful live equivalent exists. Report differences rather than promising identical fills or results.
+Create a new `optionomega` bot, leaving `bots/strategy` and its existing YAML semantics unchanged. Match OptionOmega (OO) backtest configuration wherever a meaningful live equivalent exists. Report differences rather than promising identical fills or results. The bot is a live runtime only, with no ambition to backtest: its YAML contains no backtest settings.
 
-Reference: <https://docs.optionomega.com/backtesting/backtest-setup> (including its Markdown version). OO documents positive entry premium bounds for credit and debit strategies, evaluated after entry slippage; slippage is per position, not per leg. Its two-hit backtest rules retrospectively use the first hit's price, which cannot be reproduced live.
+Reference: <https://docs.optionomega.com/backtesting/backtest-setup> (including its Markdown version). OO documents positive entry premium bounds for credit and debit strategies, evaluated after entry slippage; slippage is per position, not per leg. Its two-hit backtest rules retrospectively use the first hit's price, which cannot be reproduced live. OO simulates slippage; this bot does not configure it, see section 3.
 
 No screenshot attachment is available in the current conversation. Examples below are illustrative, not a verified transcription of a screenshot or shared backtest.
 
@@ -16,10 +16,13 @@ No screenshot attachment is available in the current conversation. Examples belo
 - Hard stop loss: broker-held **GTC stop** order; also allow stop-limit. `order_type` defaults to `stop` if a stop loss is configured. No stop is created merely because this default exists.
 - Soft exits (e.g. position delta crossing a threshold): monitored by the farm and executed using a limit chaser.
 - Four explicit positive entry premium bounds: minimum/maximum credit and minimum/maximum debit for open.
-- Optional OO-prefixed minimum/maximum entry premium inputs reproduce OO's side-agnostic, after-slippage filter. The user accepted fail-fast validation if explicit and OO bounds are both supplied with non-null values, rather than silent precedence.
+- Optional OO-prefixed minimum/maximum entry premium inputs reproduce OO's side-agnostic filter on positive magnitudes. OO applies it after simulated slippage; live, it is applied to the anchor quote and to every submitted limit (section 3). The user accepted fail-fast validation if explicit and OO bounds are both supplied with non-null values, rather than silent precedence.
 - No implicit entry schedule, exit rule, profit target, or stop loss. If no exit is specified, hold to expiration, subject to real settlement/assignment behavior.
 - First-expiry full-position close is explicitly configured; **false is valid even for mixed-expiry positions**. Some strategies deliberately let selected legs expire.
 - Floating entry is Phase 1. Once entry conditions fire, the bot is done entering for that trading day, even if selection, filtering, submission, or filling subsequently fails.
+- Live runtime only: the YAML has no `backtest_only` section and no backtest settings.
+- Slippage is measured after the fact, never configured. Entries are bounded by `execution.max_adverse_price_change`. The slippage of a hard-stop market exit is the difference between the expected and the received price. Soft exits use a limit chaser that starts at mid and approaches the bid (selling) or ask (buying).
+- The database schema is redesigned cleanly as v4. There is no relevant data to preserve, so the optimal design wins over compatibility with the v1-v3 layouts.
 
 ## 2. Pricing vocabulary and units
 
@@ -52,22 +55,23 @@ All six optional bounds accept non-negative magnitudes; null means absent. Valid
 
 1. If any explicit bound is non-null, use only the explicit family. Both families non-null is a configuration error, as approved.
 2. A credit quote is checked against the credit pair; a debit quote against the debit pair. If only credit bounds exist, a debit entry is disallowed, and vice versa. If both pairs exist, either direction may qualify. Phase 1 rejects zero-price entries rather than silently assigning a direction.
-3. If no explicit bound is supplied, use the OO-prefixed pair, if present. OO says: "Use positive numbers for both values, regardless of whether the strategy is a credit or a debit" and applies the filter after entry slippage.
+3. If no explicit bound is supplied, use the OO-prefixed pair, if present. OO says: "Use positive numbers for both values, regardless of whether the strategy is a credit or a debit" and applies the filter after its simulated entry slippage. This bot has no simulated slippage, so the pair is checked against the anchor quote and against every submitted limit (below).
 4. If neither family is supplied, no premium filter applies.
 
 These are **eligibility filters, never quote clamping**. A quote that fails is skipped, not changed into an eligible synthetic quote.
 
-Explicit bounds also constrain **every submitted entry limit**, including the first attempt and every modification. With BUY-perspective limit `L`, credit bounds imply `-max_credit <= L <= -min_credit`; debit bounds imply `min_debit <= L <= max_debit`, omitting absent bounds. Do not cross from credit to debit during a chase. A limit protects against adverse execution but cannot prevent favorable price improvement beyond a maximum credit/minimum debit bound; report actual fills without claiming such bounds are guaranteed fill constraints.
+Explicit bounds also constrain **every submitted entry limit**, including the first attempt and every modification. With BUY-perspective limit `L`, credit bounds imply `-max_credit <= L <= -min_credit`; debit bounds imply `min_debit <= L <= max_debit`, omitting absent bounds. Do not cross from credit to debit during a chase. A limit protects against adverse execution but cannot prevent favorable price improvement beyond a maximum credit/minimum debit bound; report actual fills without claiming such bounds are guaranteed fill constraints. The OO pair constrains every submitted limit the same way, as side-agnostic magnitudes: `min <= abs(L) <= max`, and `L` must not change sign relative to the anchor quote.
 
-### Slippage is not a live order surcharge
+### Slippage is measured, not configured
 
-Keep three concepts separate:
+Slippage has no configuration key. The runtime YAML contains no simulated-fill setting and nothing is inherited from a backtest. Each order type deals with the difference between expected and actual price in its own way:
 
-- `backtest_only.slippage`: OO's historical fill assumption. Exit and stop-loss values do not change live trigger prices or orders.
-- `entry.option_omega_entry_slippage`: explicit compatibility input used only when OO premium filtering is active. Adverse simulated BUY price is `M + s`: credit premium shrinks, debit premium grows. Reject a zero/sign-crossing result instead of reclassifying the trade. Verify corner cases against an OO reference fixture; the docs do not specify the sign-crossing case.
-- `execution.max_adverse_price_change`: a live, explicitly configured chase budget relative to a fixed initial quote anchor. It is never inherited from a backtest setting.
+- **Entries:** OO's backtest slippage is replaced by `execution.max_adverse_price_change`, a live, explicitly configured chase budget relative to a fixed initial quote anchor (the mid price when the entry attempt starts). The chaser may choose a worse limit only within this budget and the premium constraints above. Entries are always limit orders, never market, and no fill is guaranteed.
+- **Hard stop-loss exits:** a triggered stop becomes a market order (stop-limit: a limit order). Slippage is the delta between the price the farm hoped for (the stop's calculated trigger price) and the price actually received. Nothing can be configured or influenced; it is measured and reported. A stop-limit bounds the limit price but may remain unfilled.
+- **Profit target:** a broker-held limit order fills at the limit or better. Price improvement is reported as a favorable difference.
+- **Soft exits** (time exits, deadline closes, position-delta changes and other managed rules): executed with the same limit chaser as entries. The first limit is the current mid price of the canonical spread. The chaser then approaches the bid when selling (closing is a SELL of the canonical BAG) or the ask when buying, in `price_increment` steps every `wait_seconds`, for at most `max_attempts`. The limit never goes beyond the natural side (bid or ask), so a soft exit is never a market order and may remain unfilled. An unfilled exit leads to the unresolved-risk state of section 6B.
 
-Entries are always limit orders, never market. The chaser may choose a worse limit only within the explicit budget and premium constraints. No fill is guaranteed. Stop-market exits may slip; stop-limit exits bound the limit price but may remain unfilled. Soft exits stay limit-only.
+Measurement: every order stores its reference price (the price the farm hoped for: the entry's initial anchor mid, the stop's trigger price, the profit target's limit price, the soft exit's initial mid) next to the actual average fill price (`orders.avg_fill_price`, `fills`). Reporting derives slippage as the signed difference, positive when adverse, in price points per spread and in dollars. Slippage never feeds back into triggers, filters or orders.
 
 ## 4. Proposed YAML contract
 
@@ -99,7 +103,6 @@ entry:
   max_debit_for_open: 3.00
   option_omega_min_entry_premium: null
   option_omega_max_entry_premium: null
-  option_omega_entry_slippage: null
   quote_filter: {max_quote_age_seconds: 5, max_leg_bid_ask_width: 0.50}
   execution:
     order_type: limit
@@ -121,22 +124,13 @@ exit:
   close_full_position_before_first_leg_expires_minutes: 20
   managed_exits: []
   monitoring: {interval_seconds: 60, align_to_minute: true}
-  execution:
-    starting_offset: 0.00
+  execution:  # soft exits: limit chaser from mid toward bid (selling) / ask (buying)
     price_increment: 0.01
     wait_seconds: 20
     max_attempts: 5
-    max_adverse_price_change: 0.10
-backtest_only:
-  start_date: 2024-01-01
-  end_date: 2025-12-31
-  starting_funds: 50000
-  commissions: {open_per_contract: 1.65, close_per_contract: 1.65}
-  slippage: {entry: 0.05, exit: 0.10, stop_loss: 0.20}
-  require_two_consecutive_hits_at_profit_target: true
 ```
 
-For OO compatibility filtering, set all four explicit bounds to null, then set the OO pair and `option_omega_entry_slippage` (explicitly 0 for none). A future importer may copy a backtest slippage value into this compatibility input, but must show the mapping rather than silently inherit it.
+For OO compatibility filtering, set all four explicit bounds to null and set only the OO pair. The runtime YAML has no backtest or slippage section: unknown keys, including `backtest_only`, are validation errors (`extra: forbid`). A future OO importer may propose `execution.max_adverse_price_change` from an OO entry slippage value, but must show that mapping rather than silently inherit it. The soft-exit `execution` block has no price budget: the chase starts at mid, moves by `price_increment` toward the natural side (bid when selling, ask when buying) and stops there.
 
 Validation also checks unique leg IDs, acyclic parent links, per-leg DTE, positive quantities, OO delta 0..100 converted to broker units, known trigger methods, stop-limit offset when applicable, allocation consistency, and coherent windows/schedules. Floating mode disallows multiple fixed times and re-entry. The example condition vocabulary is proposed and requires an adapter to the existing evaluator API.
 
@@ -154,7 +148,7 @@ Use New York trading dates and exchange-aware sessions. Re-evaluate conditions d
 
 ## 5. OO settings coverage and ignored inputs
 
-Accept recognized backtest-only inputs under `backtest_only`, validate them, and log each present ignored key with its reason at startup. Unknown or unimplemented runtime settings are errors, not silently ignored. A future import report must identify renamed/mapped keys and unsupported features.
+The runtime YAML has no section for backtest-only settings: the bot is live-only, and unknown or unimplemented settings are validation errors, never silently ignored. The table maps each OO setting to its runtime disposition. "Ignored" means there is no runtime equivalent and the key is not accepted in the YAML. A future import report must identify renamed/mapped keys and unsupported features.
 
 | OO setting | Runtime disposition |
 | --- | --- |
@@ -169,22 +163,23 @@ Accept recognized backtest-only inputs under `backtest_only`, validate them, and
 | Starting funds | Ignored: actual account equity is used |
 | Ignore margin requirements | Ignored: cannot bypass broker buying power |
 | Margin allocation %, max allocation, capital per contract | Phase 2 account/margin sizing; reject until implemented |
-| Max open positions | Phase 1 durable per-`bot_id` count of `virtual_positions` in PENDING or OPEN (PENDING is the in-flight reservation, written before the order is sent); independent of config version |
+| Max open positions | Phase 1 durable per-`bot_id` count of `virtual_positions` in ENTRY_PENDING or OPEN (ENTRY_PENDING is the in-flight reservation, written before the order is sent); independent of config version |
 | Prune oldest | Phase 2 managed close, not an immediate state deletion |
+| Manual close of a framework-opened position | Phase 2, to be defined (section 7) |
 | Fixed entry times, daily/weekly/monthly/specific dates, blackouts | Phase 1 scheduler |
 | Floating entry | Phase 1, persisted once-per-trigger-day latch |
 | Entry premium min/max | Phase 1 explicit family or OO compatibility family |
 | Existing VIX/SMA/intraday-move filters | Phase 1 adapters, subject to data validation |
 | Entry short/long ratio | Phase 2 |
 | IV, gaps, opening range, additional TA | Phase 2 data/indicator providers |
-| DIX/GEX or CSV/custom signals | Unsupported until an explicit provider exists; not inherently backtest-only |
+| DIX/GEX or CSV/custom signals | Unsupported; no external signal provider is planned |
 | Re-entry after exit | Later; incompatible with Phase 1 floating daily latch |
 | Whole-position PT / SL percent, fixed premium, closing premium | Phase 1 GTC broker exits |
 | Early exits DTE/DIT/MIT, position delta, underlying move/tested | Phase 1 managed exit rules with explicit parameters |
 | Trailing stop, intra-minute evaluation | Phase 2, subject to broker capability / market-data capacity |
 | Leg groups, per-leg stops, profit/time actions | Phase 3 |
 | Commissions/fees | Ignored for live order math; actual charges recorded separately by `OrderService` in `fills.commission` |
-| Entry/exit/SL slippage assumptions | Ignored as execution settings; explicit OO entry-filter compatibility input is separate |
+| Entry/exit/SL slippage assumptions | Ignored: slippage is measured after the fact, not configured; entries use `execution.max_adverse_price_change`, soft exits a limit chaser from mid toward bid/ask (section 3) |
 | Wide bid-ask entry/exit handling | Live quote validation and explicit chase budgets; map OO thresholds only when precise units match |
 | Close open trades on test completion | Ignored: no runtime test end |
 | Cap non-opening profits at PT | Ignored historical fill modeling; live limit may receive price improvement, not a profit cap |
@@ -211,9 +206,9 @@ Gaps against this plan (the sections named in the first column handle each):
 | Plan need | Baseline | Gap |
 | --- | --- | --- |
 | Lifecycle (6C) | `virtual_positions.status` is PENDING, OPEN, CLOSED or CANCELLED; the closing transition only fires from OPEN | Additional states and transition guards |
-| Legs and expiries (6C) | `legs_data` JSON blob; one NOT NULL `expiration` column | `position_legs` table with per-leg quantity, expiry and cutoff |
-| Entry latch, reservations (4, 6C) | None. A PENDING position is written before the order is sent; `get_open_positions` returns OPEN only | `entry_latches` table; PENDING+OPEN count |
-| Order detail (6B) | `orders` keeps ids, `perm_id`, `client_id`, type, tif, quantity, prices, `contract_json`, status, rejection reason, filled quantity | OCA group/type, trigger method, `outsideRth`, account (only `fills` has it) |
+| Legs and expiries (6C) | `legs_data` JSON blob; one NOT NULL `expiration` column | `position_legs` table with per-leg quantity, expiry and cutoff, replacing both |
+| Entry latch, reservations (4, 6C) | None. A PENDING position is written before the order is sent; `get_open_positions` returns OPEN only | `entry_latches` table; ENTRY_PENDING+OPEN count |
+| Order detail (6B) | `orders` keeps ids, `perm_id`, `client_id`, type, tif, quantity, prices, `contract_json`, status, rejection reason, filled quantity | Typed columns for OCA group/type, trigger method, `outsideRth`, account (only `fills` has it) and the reference price for slippage measurement |
 | Audit trail (6B, 6C) | Latest prices plus `modify_count`; no status or modification history | `order_events` table |
 | Hard-exit OCA (6B) | None; after a closing fill, `_cancel_remaining_orders` cancels the sibling orders | Broker OCA; keep cancel-after-fill only as a fallback |
 | Cancel/modify safety (6B) | `cancel_order` only sends the request; `modify_order` does not check the order status | Awaitable cancel confirmation; terminal-order guard |
@@ -232,9 +227,9 @@ Add `PositionMonitor` for soft exits, expiry deadlines and order-state reconcili
 
 ### B. Orders, hard exits and concurrency
 
-Add reusable `LimitChaser` and `BrokerExitOrders` services as thin layers over the existing `OrderService` (`place_order`, `modify_order`, `cancel_order`); they never call `ib.placeOrder`/`ib.cancelOrder` and never set `orderRef`. Chase using events, partial-fill accounting, tick-aware directional rounding, immutable initial price anchor, explicit timeout/attempt budget and durable order references (the framework `orderRef`, with its `#n` suffix when a role is re-placed). A timeout or cancel request is not a confirmed cancellation: `OrderService.cancel_order` only sends the request and the final status arrives later through the status event, so add an awaitable confirmation. Process late fills and reject updates to terminal orders (`modify_order` does not check the status today).
+Add reusable `LimitChaser` and `BrokerExitOrders` services as thin layers over the existing `OrderService` (`place_order`, `modify_order`, `cancel_order`); they never call `ib.placeOrder`/`ib.cancelOrder` and never set `orderRef`. The same `LimitChaser` serves entries (from mid, within `max_adverse_price_change`) and soft/deadline exits (from mid toward the bid when selling or the ask when buying, never beyond it). Chase using events, partial-fill accounting, tick-aware directional rounding, immutable initial price anchor, explicit timeout/attempt budget and durable order references (the framework `orderRef`, with its `#n` suffix when a role is re-placed). A timeout or cancel request is not a confirmed cancellation: `OrderService.cancel_order` only sends the request and the final status arrives later through the status event, so add an awaitable confirmation. Process late fills and reject updates to terminal orders (`modify_order` does not check the status today).
 
-Place PT as GTC LMT and SL as GTC STP or STP LMT for confirmed filled quantity. Protect partial entry fills promptly; resizing protection must not accidentally over-close. Where supported, link exits with broker OCA and overfill protection; verify partial-fill reductions instead of assuming cancel-all is adequate. The existing `OrderService._cancel_remaining_orders` is not OCA: between the first closing fill and the cancel, a sibling order can also fill. Treat it as a fallback, not as the protection. Persist acknowledgment/rejection, permId, account, combo definition, prices, OCA and remaining quantity. `orders` already holds status, rejection `status_message`/`error_code`, `perm_id`, `client_id`, `contract_json`, prices and `filled_quantity`; OCA group/type, trigger method, `outsideRth` and account still have to be added (for example as a full `order_json` snapshot next to `contract_json`), and per-modification history belongs in the audit events. Surface a rejected protective order immediately and stop additional entries (today the reason is persisted but the position stays OPEN and nothing notifies the bot, so `OrderService` needs a listener hook); never silently convert a requested hard stop into a farm-managed rule.
+Place PT as GTC LMT and SL as GTC STP or STP LMT for confirmed filled quantity. Protect partial entry fills promptly; resizing protection must not accidentally over-close. Where supported, link exits with broker OCA and overfill protection; verify partial-fill reductions instead of assuming cancel-all is adequate. The existing `OrderService._cancel_remaining_orders` is not OCA: between the first closing fill and the cancel, a sibling order can also fill. Treat it as a fallback, not as the protection. Persist acknowledgment/rejection, permId, account, combo definition, prices, OCA and remaining quantity. `orders` already holds status, rejection `status_message`/`error_code`, `perm_id`, `client_id`, `contract_json`, prices and `filled_quantity`; OCA group/type, trigger method, `outsideRth` and account still have to be added as typed columns (section 6C), together with the reference price used to measure slippage (section 3), and per-modification history belongs in the audit events. Surface a rejected protective order immediately and stop additional entries (today the reason is persisted but the position stays OPEN and nothing notifies the bot, so `OrderService` needs a listener hook); never silently convert a requested hard stop into a farm-managed rule.
 
 **Capability gate:** existing `strategy` code submits BAG `StopOrder`s but that is not evidence of IB acceptance. Verify GTC STP/STP LMT, negative-price triggers, combo routing, maximum leg count, calendar support, OCA and trigger methods on the intended contracts/exchanges in a paper account. Public generic stop-order documentation alone does not establish combo support. Some broker-held orders may be IB-simulated rather than exchange-native. If the broker cannot support a requested combination, reject it clearly; do not claim parity or fall back silently. `outsideRth` cannot create an options trading session; align order eligibility with actual sessions and OO RTH semantics.
 
@@ -242,14 +237,14 @@ For a soft/deadline close, lock the position, request cancellation of competing 
 
 ### C. Persistence, restart and expiration
 
-Extend the existing schema (`framework/db_schema.py`, `PositionManager`, `OrderService`) with tested migrations. Do not add a second persistence path. Store canonical legs/conIds/ratios, actual fills and remaining per-leg quantities, multiplier, signed entry price, underlying entry price, individual expiries/cutoffs, broker exit IDs, OCA, soft-exit state, first-expiry policy and execution audit events. Add entry-day latch and in-flight reservations with uniqueness constraints.
+Redesign the existing schema (`framework/db_schema.py`, `PositionManager`, `OrderService`) cleanly as schema v4. Do not add a second persistence path. No relevant database data exists yet, so the optimal design wins over compatibility: no backfill, no additive-only constraint, and no in-place upgrade of v1-v3 files. Store canonical legs/conIds/ratios, actual fills and remaining per-leg quantities, multiplier, signed entry price, underlying entry price, individual expiries/cutoffs, broker exit IDs, OCA, soft-exit state, first-expiry policy and execution audit events. Add entry-day latch and in-flight reservations with uniqueness constraints.
 
-**Schema rules inherited from schema v3** (`SCHEMA_VERSION` becomes 4 with the first new table or column):
+**Schema rules** (`SCHEMA_VERSION` becomes 4):
 
-- Migrations are structural and idempotent (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ... ADD COLUMN` after checking the existing columns), not guarded by `user_version`. Tests must upgrade v1, v2 and v3 databases to the new version.
+- One clean v4 DDL (`CREATE TABLE IF NOT EXISTS`) creates every table, with the constraints the v3 migration path made impractical (a `CHECK` on `virtual_positions.status`, `NOT NULL` wherever the model requires it). The structural v1-v3 migration code and its tests are removed. A database file with an older `PRAGMA user_version` (including the strategy bot's current files) is rejected on open with a clear message to archive or delete it; it is never altered in place.
 - Every new table needs a **natural primary key** that is identical on every machine (UUIDs, orderRefs, IB `execId`, `bot_id` plus date), never an autoincrement id, and an `updated_at` column. `db_transfer` merges rows by natural key, resolves conflicts by `updated_at`, and handles `bots` and `fills` specially.
 - Register every new table in `db_transfer.TABLES`, parents before children, and bump `FORMAT_VERSION` because a file without the new tables is no longer complete. Use `INSERT OR IGNORE` for append-only data. Decide per table whether it is immutable (like `fills`) or last-writer-wins (like `orders`).
-- Config versioning: `bots.version_id` hashes the whole YAML (`canonical_config_json`, with `default=str` for dates). Editing `backtest_only` alone creates a new bot version. Everything that must outlive a config edit therefore keys on `bot_id`, not `bot_version_id`: the entry latch, the max-open-positions count and recovery. The `bots` row stays a snapshot of the configuration a position was opened with.
+- Config versioning: `bots.version_id` hashes the whole YAML (`canonical_config_json`, with `default=str` for dates). Any YAML edit creates a new bot version. Everything that must outlive a config edit therefore keys on `bot_id`, not `bot_version_id`: the entry latch, the max-open-positions count and recovery. The `bots` row stays a snapshot of the configuration a position was opened with.
 
 Planned additions:
 
@@ -259,15 +254,15 @@ Planned additions:
 | `position_legs` | `(position_id, leg_id)` | `con_id`, ratio, right/strike, `expiry`, `last_trade_cutoff`, filled and remaining quantity, leg status (OPEN, EXPIRED, EXERCISED, ASSIGNED, CLOSED) |
 | `order_events` | UUID `event_id` | `order_ref`, event type (status, modification, cancel request, error), prices, status, timestamp; append-only audit trail |
 
-New columns on existing tables: `orders.order_json` (OCA group/type, trigger method, `outsideRth`, account), and on `virtual_positions` the signed entry price, multiplier, underlying entry price, first-expiry policy, soft-exit state and a `last_trade_cutoff` summary. `virtual_positions.expiration` is NOT NULL; for mixed expiries store the earliest leg expiry and treat `position_legs` as the source of truth.
+Changes to existing tables (made directly in the v4 DDL, not as `ALTER TABLE`): `orders` gains the typed columns `oca_group`, `oca_type`, `trigger_method`, `outside_rth`, `account` and `reference_price` (the price the farm hoped for, used to measure slippage, section 3) instead of a JSON snapshot, so reporting can query them. `virtual_positions` gains the signed entry price, multiplier, underlying entry price, first-expiry policy and soft-exit state, and loses `legs_data`, `expiration`, `tp_order_id` and `sl_order_id`: `position_legs` is the single source of truth for legs and expiries (earliest expiry and last trade cutoff are queries, not stored copies), and the protective orders are found in `orders` by position and role. `create_position` takes the legs as a list instead of `legs_data` and `expiration`; the strategy bot is adapted in the same change.
 
-**Lifecycle.** `virtual_positions.status` has no database constraint, so new states need no migration, but the code interprets only PENDING, OPEN, CLOSED and CANCELLED. The existing PENDING is this plan's ENTRY_PENDING. Keep the name PENDING, because renaming would break the strategy bot and old rows. Add states such as EXIT_CANCEL_PENDING, EXIT_WORKING, PARTIALLY_EXPIRED, NEEDS_RECONCILIATION on top, and move the transitions into one guarded function. Today `OrderService._apply_final_status` acts only on PENDING and OPEN; `get_open_positions` returns OPEN only, so positions in the new "still exposed" states must be added to every query that decides exposure or max-open counts. The OPEN transition fires only once the opening order reaches a done state, with `quantity = int(filled)`; a partially filled entry that is still working has no OPEN position and no protection, so add an explicit partial-fill hook (see section 6B, "Protect partial entry fills promptly").
+**Lifecycle.** Today `virtual_positions.status` has no database constraint and the code interprets only PENDING, OPEN, CLOSED and CANCELLED. v4 renames PENDING to ENTRY_PENDING (there are no old rows to keep, and the strategy bot only sees the status through `OrderService`) and adds a `CHECK` constraint listing every allowed state. Add states such as EXIT_CANCEL_PENDING, EXIT_WORKING, PARTIALLY_EXPIRED, NEEDS_RECONCILIATION on top, and move the transitions into one guarded function. Today `OrderService._apply_final_status` acts only on PENDING (ENTRY_PENDING in v4) and OPEN; `get_open_positions` returns OPEN only, so positions in the new "still exposed" states must be added to every query that decides exposure or max-open counts. The OPEN transition fires only once the opening order reaches a done state, with `quantity = int(filled)`; a partially filled entry that is still working has no OPEN position and no protection, so add an explicit partial-fill hook (see section 6B, "Protect partial entry fills promptly").
 
 **Fills.** `fills.exec_id` as primary key with `INSERT OR IGNORE` already makes duplicate callbacks idempotent; commissions are attached later by `commissionReportEvent`. Combo executions may arrive as the BAG and/or as individual legs (`fills.con_id`/`sec_type`). Derive position quantity and entry price `E` from the order (`orders.filled_quantity`, `avg_fill_price`) or from one consistent row type, never by summing BAG and leg rows together. Verify which rows IB sends in paper before relying on either. Also check how IB numbers corrected executions: if a correction arrives under a changed `execId` suffix, `INSERT OR IGNORE` would count it twice.
 
 CLOSED requires confirmed close/settlement of all exposure, not merely a date passing. `OrderService` today sets CLOSED as soon as a take-profit, stop-loss or close order reaches Filled, which is correct only when that order covered every leg and the full quantity. For partially filled closes, mixed expiries and expired legs, CLOSED must also check `position_legs`.
 
-On restart/reconnect: reconcile open orders, recent executions, stored fills and aggregate account positions before permitting entries. The framework gives a starting point: `OrderService.attach()` replays `ib.trades()` into the database on every start, and every framework order carries its `orderRef`, so a GTC exit that survived the restart is recognised by `parse_order_ref` rather than re-placed. `attach()` is a no-op on repeated calls, and ib_async does not deliver orders and executions replayed on connect as live events, so call `sync_from_ib` explicitly after every reconnect (for example from `ib.connectedEvent`), not only at startup. Orders placed outside the framework have no framework `orderRef` and are ignored. They still count in broker positions, so they are a reconciliation discrepancy, never silently adopted. Broker net positions cannot identify individual overlapping strategies; aggregate all virtual legs across bots and flag discrepancies, never classify one bot as missing solely because its legs net against another bot. Preserve valid GTC orders; do not duplicate an order just because the local in-memory trade is missing. Resolve gaps outside available execution history using account statements/Flex or operator review. Daily latches survive all recovery paths, including database export/import: the `entry_latches` rows are insert-only, so a merge keeps the union and a latch is never lost or reset. Importing into a database while the farm runs is unsupported (`db_tool.py` already requires the farm to be stopped); after restoring a database from another machine, run the same reconciliation before permitting entries. Reconciliation is still missing in the framework (there is no `reqPositions` comparison today), so it is a Phase 1 work item rather than an inherited feature.
+On restart/reconnect: reconcile open orders, recent executions, stored fills and aggregate account positions before permitting entries. The framework gives a starting point: `OrderService.attach()` replays `ib.trades()` into the database on every start, and every framework order carries its `orderRef`, so a GTC exit that survived the restart is recognised by `parse_order_ref` rather than re-placed. `attach()` is a no-op on repeated calls, and ib_async does not deliver orders and executions replayed on connect as live events, so call `sync_from_ib` explicitly after every reconnect (for example from `ib.connectedEvent`), not only at startup. Orders placed outside the framework have no framework `orderRef` and are ignored (the Phase 2 manual-close convention in section 7 is the planned, strictly defined exception). They still count in broker positions, so they are a reconciliation discrepancy, never silently adopted. Broker net positions cannot identify individual overlapping strategies; aggregate all virtual legs across bots and flag discrepancies, never classify one bot as missing solely because its legs net against another bot. Preserve valid GTC orders; do not duplicate an order just because the local in-memory trade is missing. Resolve gaps outside available execution history using account statements/Flex or operator review. Daily latches survive all recovery paths, including database export/import: the `entry_latches` rows are insert-only, so a merge keeps the union and a latch is never lost or reset. Importing into a database while the farm runs is unsupported (`db_tool.py` already requires the farm to be stopped); after restoring a database from another machine, run the same reconciliation before permitting entries. Reconciliation is still missing in the framework (there is no `reqPositions` comparison today), so it is a Phase 1 work item rather than an inherited feature.
 
 For deliberate leg expiry, cancel stale combo protection before the leg becomes untradeable, reconcile settlement/assignment, and only rebuild protection on a well-defined remaining position. Do not blindly apply original percentage targets to a changed leg set. Phase 1 retains exposure and requests intervention if residual cost basis/order eligibility cannot be determined safely. This is supported configuration with explicit operational limitations, not a validation error.
 
@@ -285,8 +280,8 @@ Re-inspected after commit `3fcc5f0`. This replaces the earlier finding that the 
 
 - Persistence is wired in: `bots/strategy/bot.py` calls `order_service.attach`, `create_position`, `place_order` (open, take-profit, stop-loss), `modify_order` (chase), `cancel_order` and `cancel_unprotected_orders`. Orders, fills, commissions, rejection reasons and the PENDING, OPEN, CLOSED and CANCELLED transitions are persisted from IB events. The unit tests mock IB; nothing is paper-validated yet (BAG execution reports, BAG stop and OCA acceptance, migration of a real live database on first start).
 - Still absent: an active exit-evaluation loop (`ExitConditionEvaluator` is constructed but never evaluated), any reconciliation against `reqPositions`, and any caller of `PositionManager.get_open_positions` or `get_position_by_order_ref` outside the class itself. The strategy bot still places the stop-loss and take-profit as separate non-OCA orders.
-- `legs_data` remains a JSON blob. The strategy bot stores `con_id`, `local_symbol`, `right`, `strike`, `expiration` and `ratio` per leg there, which is a starting point for the `position_legs` backfill.
-- Existing strategy behavior is not changed as part of this plan. Schema and `OrderService` changes must stay backward compatible with it: additive columns and tables, unchanged roles and `orderRef` format, and unchanged meaning of PENDING, OPEN, CLOSED and CANCELLED.
+- `legs_data` is a JSON blob. The strategy bot stores `con_id`, `local_symbol`, `right`, `strike`, `expiration` and `ratio` per leg there. v4 replaces it with `position_legs` and the strategy bot writes its legs there. There is no backfill.
+- Existing strategy behavior (what it trades and how) is not changed by this plan, but its code is adapted to the v4 schema in the same change: legs go to `position_legs`, PENDING becomes ENTRY_PENDING, and existing database files are not migrated. Roles and the `orderRef` format stay unchanged. Its tests are updated accordingly and must still pass.
 - Memory-bank statements about the older persistence state are outdated where they conflict with this section; the code is authoritative.
 
 ## 7. Implementation sequence and acceptance gates
@@ -295,7 +290,7 @@ Re-inspected after commit `3fcc5f0`. This replaces the earlier finding that the 
 
 1. Save this specification; implement strict schema, ignored-key report, pure pricing/premium-filter functions, and documentation fixtures.
 2. Prove broker combo GTC PT/STP/STP LMT and OCA compatibility in paper, or clearly block unsupported configurations. Do this before enabling entry for configurations requiring hard exits.
-3. Extend the existing persistence (not rebuild it): `entry_latches`, `position_legs`, `order_events`, new `orders`/`virtual_positions` columns and lifecycle states; `OrderService` hooks for partial fills, rejected protection, awaitable cancel confirmation and reconnect resync; `db_transfer` support for each new table. Add migration (v1, v2, v3 to v4), export/import and recovery tests.
+3. Redesign the schema cleanly as v4 on top of the existing persistence layer (no second persistence path, no migration of v1-v3 files): `entry_latches`, `position_legs`, `order_events`, typed `orders` columns, reshaped `virtual_positions` and lifecycle states; `OrderService` hooks for partial fills, rejected protection, awaitable cancel confirmation and reconnect resync; `db_transfer` support for each new table. Add fresh-schema, old-version-rejection, export/import and recovery tests, and adapt the strategy bot and its tests to v4.
 4. Build shared market data, per-leg selection and session-aware scheduler (fixed plus floating).
 5. Implement bounded limit chaser, protective broker orders and race-safe exit coordination.
 6. Add monitoring for explicit soft rules, first-expiry deadlines, and safe partial-expiry handling; wire orchestrator and reconciliation.
@@ -304,28 +299,38 @@ Re-inspected after commit `3fcc5f0`. This replaces the earlier finding that the 
 Phase 1 includes fixed-quantity sizing, per-leg DTE, delta/linked-offset selection, filters, floating entry, broker hard exits, managed risk/time exits, and restart safety. Acceptance requires tests for:
 
 - Credit/debit PT/SL in each unit; tick rounding and SELL-close adapter signs.
-- All four bounds, missing pairs, OO after-slippage filter, mutually exclusive families, zero/sign-crossing prices, no quote clamping, chase bounds and favorable fills.
+- All four bounds, missing pairs, OO side-agnostic filter on the anchor quote and on every limit, mutually exclusive families, zero/sign-crossing prices, no quote clamping, chase bounds and favorable fills.
+- Slippage is measured, not configured: the reference price is stored per order; entry, stop, profit-target and soft-exit slippage are derived with the correct adverse sign. A soft-exit chase starts at mid, approaches the bid (selling) or ask (buying) in increments, never goes beyond it and never becomes a market order.
+- The runtime YAML rejects `backtest_only` and any slippage key as unknown keys.
 - Hard-stop default only when a stop exists; explicit no-exit means no exit; false first-expiry policy accepted for calendars.
 - Floating latch consumed before selection; no retry after rejection/no-fill/error; persistence across restart and New York date/DST rollover.
 - Stale data, missing Greeks, disconnected feeds and subscription sharing.
 - Partial entry/exit fills, OCA reduction, cancel/fill races, duplicate executions, rejected protection and failed chase protection recovery.
 - Early closes/holidays and correct expiry cutoff; failed deadline close; deliberate first-leg expiry with remaining legs tracked; assignment requiring intervention.
-- Offline bracket fills, orphaned/missing orders, shared-leg netting across bots and migration compatibility.
-- Schema v3 to v4 migration of a populated database with unchanged existing rows; the strategy bot's orders and positions still behave as before.
+- Offline bracket fills, orphaned/missing orders, shared-leg netting across bots and the strategy bot's behavior on the v4 schema.
+- Fresh v4 schema creation with all constraints; a database with an older `user_version` is rejected with a clear message and not modified; the strategy bot's orders and positions still behave as before on v4.
 - Export/import round trip including each new table: the entry latch union survives a merge, a repeated import changes nothing, an old-format file is rejected clearly, and `entry_latches`, `position_legs` and `order_events` rows keep their natural keys on both machines.
-- Config edit (changed `backtest_only` or other YAML) creates a new `bots` version, but the entry latch, max-open count and recovery still apply to the same `bot_id`.
+- Config edit (any YAML change) creates a new `bots` version, but the entry latch, max-open count and recovery still apply to the same `bot_id`.
 - Replayed fills after a reconnect are not double counted; a closing fill on an already CLOSED position and a combo fill reported as both BAG and leg rows do not change quantity or entry price twice.
 
 Use the existing standard-library `unittest` patterns and mocked IB (`tests/test_order_service.py` uses `unittest.TestCase` with a `MagicMock` IB and a temporary SQLite file; add `IsolatedAsyncioTestCase` for the async chaser and scheduler); no new test library is needed. Run by module name, for example `python -m unittest tests.test_db_transfer tests.test_order_service`, because `tests` has no `__init__.py` and `unittest discover` does not work. Paper tests are separate, explicitly authorized broker operations, not part of automated discovery tests.
 
 ### Phase 2
 
-Margin/capital sizing; additional indicators and entry selectors; short/long ratios; trailing behavior; exit liquidity controls; prune-oldest; supported re-entry modes; higher-frequency monitoring with capacity checks. Each needs explicit schema/execution semantics and tests.
+Margin/capital sizing; additional indicators and entry selectors; short/long ratios; trailing behavior; exit liquidity controls; prune-oldest; supported re-entry modes; higher-frequency monitoring with capacity checks; manual close of framework-opened positions (below). Each needs explicit schema/execution semantics and tests.
+
+**Manual close of framework-opened positions (to be defined).** A human closes a position by placing an order in TWS whose `orderRef` follows a convention, for example `Close <VPID>`, where VPID is the Virtual Position ID (`virtual_positions.position_id`). Today such an order is ignored like any order without a framework `orderRef`. Open design points:
+
+- Whether the farm adopts the human's order as the position's `close` order, or treats the reference only as a signal and runs its own limit chaser close.
+- How competing protective GTC orders are cancelled first, and how a race with a protective fill is detected (overfill leads to NEEDS_RECONCILIATION).
+- Strict parsing and validation: known VPID, position still exposed, order legs, side and quantity match the remaining position; otherwise reject and alert.
+- A human-friendly VPID form: the full UUID hex is long to type; for example a short unique prefix or a per-bot sequence number shown in reporting.
+- Audit: record the event as a manual close with its source; decide whether the order is stored under the framework `orderRef` scheme or the human reference, which affects `parse_order_ref` and the `orders` natural key in `db_transfer`.
 
 ### Phase 3
 
-Leg groups, spread-premium targeting, per-leg stop behavior, profit/time actions, external signal providers, OptionOmega import/mapping tooling (not the existing `db_tool.py` database export/import) and a complete supported-settings reference.
+Leg groups, spread-premium targeting, per-leg stop behavior, profit/time actions, OptionOmega import/mapping tooling (not the existing `db_tool.py` database export/import) and a complete supported-settings reference.
 
 ## 8. Delivery status
 
-This document records the agreed plan. It was revised on 2026-11-02 after commit `3fcc5f0` (OrderService, schema v3, export/import) to build on that persistence layer instead of proposing a parallel one. No new bot, schema change, framework service, demo configuration or trading order is implemented or enabled by this document. Next implementation milestone is Phase 1 step 1, with broker capability validation as a release gate. Phase 1 step 3 is smaller than originally planned (order, fill, commission and version persistence already exist) but now carries two obligations: stay backward compatible with the strategy bot, and keep `db_transfer` complete for every new table.
+This document records the agreed plan. It was revised on 2026-11-02 after commit `3fcc5f0` (OrderService, schema v3, export/import) to build on that persistence layer instead of proposing a parallel one, and again on 2026-11-03: live-only YAML (no `backtest_only`), slippage measured instead of configured with soft exits on a limit chaser, a clean schema v4 without backward-compatibility constraints, a Phase 2 manual-close feature (to be defined) and no external signal providers. No new bot, schema change, framework service, demo configuration or trading order is implemented or enabled by this document. Next implementation milestone is Phase 1 step 1, with broker capability validation as a release gate. Phase 1 step 3 is smaller than originally planned (order, fill, commission and version persistence already exist) but now carries two obligations: adapt the strategy bot and its tests to the clean v4 schema without changing its trading behavior, and keep `db_transfer` complete for every new table.

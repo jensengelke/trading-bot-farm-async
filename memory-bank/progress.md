@@ -19,6 +19,8 @@
 - [x] Plan re-evaluated against the persistence commit 3fcc5f0 (OrderService, schema v3, db export/import): added the "Persistence baseline" gap table, schema/migration/export-import rules, lifecycle and fill-accounting notes, shutdown/reconnect findings and extra acceptance tests.
 - Correction to older completed claims below: the strategy bot now persists through `OrderService` (since 3fcc5f0). ExitConditionEvaluator exists but is not evaluated in an active position-monitor loop; no `reqPositions` reconciliation exists. Broker BAG stop/OCA support remains unverified, not guaranteed by existing code.
 
+- [x] Plan revised 2026-11-03: no `backtest_only`, slippage measured instead of configured (soft exits on a limit chaser mid -> bid/ask), clean schema v4 without backward compatibility, Phase 2 manual close (`Close <VPID>` orderRef convention, to be defined), Phase 3 without external signal providers. See `activeContext.md`.
+
 ## What Works
 
 ### Core Framework & Lifecycle ✅
