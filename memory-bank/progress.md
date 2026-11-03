@@ -1,5 +1,14 @@
 # Progress
 
+## Bot Documentation Suite (2026-11-03)
+
+- [x] Authored complete, structured Markdown documentation for all 4 framework bots in `docs/`:
+  - `docs/verify.md`: Purpose, supported asset classes, timeout guards, ATM option qualification, and complete parameter tables.
+  - `docs/strategy.md`: Purpose, multi-leg spreads, delta/offset strike selection, entry conditions, price chasing, signed premiums, and complete parameter tables.
+  - `docs/telegram.md`: Purpose, event handlers, order filtering, secret credential management, HTML formatting, and complete parameter tables.
+  - `docs/optionomega.md`: Purpose, strict schema, quote filters, floating window latches, bounded limit chaser, canonical targets, broker OCA brackets, first-leg expiration policy, and complete parameter tables.
+
+
 ## Verify Bot Option & Index Option Enhancement (2026-11-03)
 
 - [x] Extended `bots/verify/bot.py` and `bots/verify/config.py` to support stock and index options:

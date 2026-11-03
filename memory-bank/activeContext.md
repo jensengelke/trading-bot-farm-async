@@ -1,5 +1,14 @@
 # Active Context
 
+## Bot Documentation Suite Created (2026-11-03)
+
+- Created comprehensive documentation for each of the four framework bots stored in `docs/`:
+  - `docs/verify.md`: Multi-asset IB connectivity and market data verification bot (`verify`). Details root and symbol-level parameters, asset class behaviors (stocks, futures, options with index/stock auto-detection, Friday expiration targeting, ATM call quotes), and complete configuration tables.
+  - `docs/strategy.md`: Multi-leg option spread strategy execution engine (`strategy`). Documents root parameters, legs, entry conditions (SMA, intraday move, VIX), exit conditions, mid-price sampling and iterative tick chasing, signed premium conventions, and GTC bracket orders.
+  - `docs/telegram.md`: Real-time asynchronous notification bot (`telegram`). Documents notification triggers (submission, status, fills with commissions, cancellations, price adjustments), account/orderRef filtering, credential isolation in `.secret-config.yaml`, and alert samples.
+  - `docs/optionomega.md`: OptionOmega strategy execution bot (`optionomega`). Documents strict Pydantic models (`extra: 'forbid'`), underlying definitions, leg specs (delta, parent offset, underlying offset, fixed strike), allocation, frequency and floating entry windows with atomic daily latches, quote quality filtering, bounded limit chaser, signed canonical targets (`M - E`), broker GTC bracket exits with OCA groups, first-leg expiration closing policy, and schema v4 persistence.
+
+
 ## Verify Bot Option & Index Option Enhancement (2026-11-03)
 
 - Fixed verify bot hanging during option qualification in `bots/verify/bot.py`:
