@@ -1,0 +1,25 @@
+# DAX Spread Observation Bot Configuration for live-read
+type: "dax_spread_observation"
+name: "DAX Manual Spreads Monitor"
+connection: "default"     # References telegram.connections.default in .secret-config.yaml
+account: "U10702503"
+
+symbol: "DAX"
+exchange: "EUREX"
+currency: "EUR"
+market_data_type: 3       # 3 = Delayed (Eurex), 1 = Live
+
+# Risk thresholds
+max_short_delta: 0.38
+strike_tested_buffer_points: 50.0  # Alert when underlying is within 50 index points of short strike
+
+# Monitoring cadence & daily summary schedule
+monitoring_interval_seconds: 60.0
+daily_summary_schedule:
+  - "09:15"
+  - "12:30"
+  - "14:42"
+  - "17:00"
+  - "22:00"
+timezone: "Europe/Berlin"
+alert_cooldown_minutes: 60.0

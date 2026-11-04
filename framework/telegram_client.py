@@ -23,6 +23,59 @@ def escape_html(text: Any) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def get_telegram_client(
+    system_config: Any,
+    connection_name: str = "default",
+    logger: Optional[logging.Logger] = None
+) -> "TelegramClient":
+    """
+    Factory function to initialize a TelegramClient from system configuration.
+    
+    Resolves credentials from system_config (typically loaded from .secret-config.yaml)
+    under telegram.connections.<connection_name>.
+    
+    Args:
+        system_config: SystemConfig instance or dict
+        connection_name: Logical connection name (default: "default")
+        logger: Optional Logger instance
+        
+    Returns:
+        Configured TelegramClient
+        
+    Raises:
+        ValueError: If connection or credentials cannot be resolved
+    """
+    telegram_creds = None
+    if hasattr(system_config, "get"):
+        telegram_creds = system_config.get(f"telegram.connections.{connection_name}")
+        if not telegram_creds:
+            root_telegram = system_config.get("telegram")
+            if isinstance(root_telegram, dict) and "connections" in root_telegram:
+                telegram_creds = root_telegram["connections"].get(connection_name)
+    elif isinstance(system_config, dict):
+        telegram = system_config.get("telegram", {})
+        if isinstance(telegram, dict):
+            telegram_creds = telegram.get("connections", {}).get(connection_name)
+
+    if not telegram_creds or not isinstance(telegram_creds, dict):
+        raise ValueError(
+            f"Telegram connection '{connection_name}' not found in system configuration. "
+            "Ensure 'telegram.connections' is configured in .secret-config.yaml"
+        )
+
+    token = telegram_creds.get("token")
+    chat_id = telegram_creds.get("chat_id")
+    if not token or not chat_id:
+        raise ValueError(
+            f"Incomplete Telegram credentials for connection '{connection_name}'. "
+            "Both 'token' and 'chat_id' are required."
+        )
+
+    ssl_verify = telegram_creds.get("ssl_verify", True)
+    return TelegramClient(str(token), str(chat_id), logger=logger, ssl_verify=ssl_verify)
+
+
+
 class TelegramClient:
     """Lightweight, asynchronous Telegram Bot API client."""
     

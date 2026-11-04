@@ -1,5 +1,31 @@
 # Progress
 
+## DAX Spread Observation Bot & Framework Decoupling (2026-11-04)
+
+- [x] Moved shared notification and account querying infrastructure to the framework:
+  - `framework/telegram_client.py`: added `get_telegram_client` factory.
+  - `framework/account_service.py`: added `fetch_account_summary`, `fetch_portfolio_positions`, `fetch_open_orders`, and `fetch_account_snapshot` with timeout guards.
+  - `framework/formatters.py`: consolidated order, connection, and account status formatters.
+  - `framework/option_spreads.py`: credit spread pairing engine (`identify_spread_positions`) and take-profit order audit (`audit_take_profit_orders`).
+- [x] Refactored `bots/telegram/bot.py`:
+  - Connection/disconnection alerts (`ib.connectedEvent`, `ib.disconnectedEvent`).
+  - Order placements, cancellations, and status changes.
+  - Fill executions and commissions.
+  - Daily account status broadcast scheduler.
+- [x] Implemented dedicated DAX spread observation bot (`bots/dax_spread_observation/`):
+  - Configuration model `DaxSpreadObservationConfig` in `config.py`.
+  - Message formatters for delta breach, strike testing, and daily summaries in `formatters.py`.
+  - Monitoring engine `Bot` in `bot.py` with alert cooldown debouncing.
+  - Configured in `config/live-read/dax_spread_monitor.yaml`.
+- [x] Tested against live IB Gateway on port 4002 (successfully paired all 7 active DAX spreads and computed live buffers).
+  - Enhanced `audit_take_profit_orders` to recognize TWS manual closing orders (`action=SELL` with negative credit limit price) and extended `format_daily_spread_summary` to display ALL open DAX orders with human-readable strike and expiration resolution.
+  - Fixed option contract exchange qualification for DAX options (`exchange='EUREX'`) enabling streaming of `modelGreeks` and short leg delta.
+  - Relabeled delta indicator in daily summary to `short leg Δ`.
+
+
+- [x] Added unit tests in `tests/test_dax_spread_observation.py` (total test suite at 123 passing tests).
+
+
 ## Bot Documentation Suite (2026-11-03)
 
 - [x] Authored complete, structured Markdown documentation for all 4 framework bots in `docs/`:

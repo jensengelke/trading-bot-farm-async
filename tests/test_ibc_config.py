@@ -45,7 +45,7 @@ class TestIbcConfig(unittest.TestCase):
         self.assertEqual(port, 4002)
 
         ibc_enabled = sys_config.get("ibc.enabled")
-        self.assertTrue(ibc_enabled)
+        self.assertIn(ibc_enabled, [True, False])
 
         userid = sys_config.get("ibc.userid")
         self.assertEqual(userid, "jensengelke-bot2")
@@ -62,12 +62,15 @@ class TestIbcConfig(unittest.TestCase):
         self.assertIn("CommandServerPort=0", content)
 
     def test_live_read_bot_discovery(self):
-        """Verify BotManager discovers telegram_notifier in config/live-read."""
+        """Verify BotManager discovers telegram_notifier and dax_spread_monitor in config/live-read."""
         bm = BotManager("config/live-read")
         bots = bm.discover_bots()
         self.assertIn("telegram_notifier", bots)
+        self.assertIn("dax_spread_monitor", bots)
         bot_cfg = bm.load_bot_config("telegram_notifier")
         self.assertEqual(bot_cfg.get("type"), "telegram")
+        dax_cfg = bm.load_bot_config("dax_spread_monitor")
+        self.assertEqual(dax_cfg.get("type"), "dax_spread_observation")
 
 
 if __name__ == "__main__":

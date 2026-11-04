@@ -1,0 +1,1 @@
+"""DAX Spread Observation Bot package."""

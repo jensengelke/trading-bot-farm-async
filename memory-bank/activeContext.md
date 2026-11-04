@@ -1,5 +1,32 @@
 # Active Context
 
+## Telegram Notifier Refactoring & DAX Spread Observation Bot (2026-11-04)
+
+- Split notification infrastructure into framework services and specialized bots:
+  - **Framework Level**:
+    - `framework/telegram_client.py`: Added `get_telegram_client` factory to dynamically resolve credentials from system config without bot-level boilerplate.
+    - `framework/account_service.py`: Added safe, timeout-guarded snapshot queries (`fetch_account_summary`, `fetch_portfolio_positions`, `fetch_open_orders`, `fetch_account_snapshot`).
+    - `framework/formatters.py`: Unified HTML formatters for connection transitions, order lifecycles, fills, and daily account status summaries.
+    - `framework/option_spreads.py`: Robust credit spread pairing engine (`identify_spread_positions`) and protection auditor (`audit_take_profit_orders`) detecting Bear Call Spreads and Bull Put Spreads across single and rolling multiple-spread scenarios.
+  - **`bots/telegram/` (Account & Order Lifecycle Watchdog)**:
+    - Dedicated to connection events (`connectedEvent`, `disconnectedEvent`), order placement/status/cancellations, fills with commissions, and daily account health broadcasts.
+  - **`bots/dax_spread_observation/` (Dedicated DAX Manual Spreads Risk Monitor)**:
+    - Discovers manual DAX spreads from `ib.portfolio()`.
+    - Alerts on short leg delta drift (`|delta| > max_short_delta`, default 0.38).
+    - Alerts on short strike testing/breaching (`buffer <= strike_tested_buffer_points`).
+    - Alerts on long strike testing/breaching (`long_buffer <= 0`).
+    - Audits GTC Take-Profit orders from `ib.openTrades()`.
+    - Delivers scheduled daily summaries with unrealized P&L, delta, and buffer metrics.
+    - Integrated with alert cooldown to avoid notification spam.
+  - Enhanced `audit_take_profit_orders` to recognize TWS position closing orders (where right-clicking an open spread and clicking "Close" creates a BAG combo with outer action `SELL` and negative limit price, e.g. `SELL 5x @ -3.00 LMT GTC`).
+  - Extended DAX spread observation daily summary to list all active open orders on the DAX index with human-readable strike and expiration descriptions.
+  - Resolved missing Greeks/delta on DAX options by ensuring the option contract exchange is qualified as `"EUREX"` prior to market data subscription, successfully streaming live delta computations.
+  - Updated daily summary formatters to explicitly label `short leg Δ` and display actual delta values.
+
+
+  - Added `tests/test_dax_spread_observation.py` with 10 passing tests (123 total unit tests passing).
+
+
 ## Bot Documentation Suite Created (2026-11-03)
 
 - Created comprehensive documentation for each of the four framework bots stored in `docs/`:

@@ -15,6 +15,7 @@ class OrderNotificationsConfig(BaseModel):
     notify_on_status_change: bool = Field(default=True, description="Notify on status transitions")
     notify_on_cancellation: bool = Field(default=True, description="Notify on cancellations")
     notify_on_fill: bool = Field(default=True, description="Notify on execution fills")
+    notify_on_connection: bool = Field(default=True, description="Notify on connection/disconnection state changes")
     notify_on_price_adjustments: bool = Field(
         default=False,
         description="Notify on tick chase price adjustments (can be noisy)"
@@ -31,6 +32,13 @@ class OrderNotificationsConfig(BaseModel):
         default_factory=list,
         description="Optional list of orderRef prefixes to ignore (e.g., 'verify_*')"
     )
+
+
+class DailySummaryConfig(BaseModel):
+    """Configuration for daily account status broadcast."""
+    enabled: bool = Field(default=False, description="Enable daily account summary alert")
+    time: str = Field(default="22:00", description="Daily time in HH:MM format (24-hour)")
+    timezone: str = Field(default="America/New_York", description="Timezone for the daily broadcast")
 
 
 class ObservationsConfig(BaseModel):
@@ -62,6 +70,10 @@ class TelegramBotConfig(BaseModel):
     notifications: OrderNotificationsConfig = Field(
         default_factory=OrderNotificationsConfig,
         description="Order notification rules"
+    )
+    daily_summary: Optional[DailySummaryConfig] = Field(
+        default_factory=DailySummaryConfig,
+        description="Daily account status broadcast rules"
     )
     observations: Optional[ObservationsConfig] = Field(
         default_factory=ObservationsConfig,

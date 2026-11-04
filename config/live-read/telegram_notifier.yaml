@@ -6,6 +6,7 @@ silent_startup: false     # Set to true to suppress the online greeting message
 # Phase 1: Real-time trading alerts
 notifications:
   enabled: true
+  notify_on_connection: true       # Alert when IB Gateway connects or disconnects
   notify_on_placement: true        # Alert when new orders are placed (Limit, Stop, Combo)
   notify_on_status_change: true    # Alert on status updates (Submitted, PreSubmitted, Inactive)
   notify_on_cancellation: true     # Alert when orders are cancelled
@@ -16,6 +17,12 @@ notifications:
   filter_accounts: ["U10702503"]
   include_order_refs: []
   exclude_order_refs: []
+
+# Daily account status broadcast
+daily_summary:
+  enabled: true
+  time: "22:00"
+  timezone: "Europe/Berlin"
 
 # Phase 2 (Future): Scheduled portfolio observations
 observations:

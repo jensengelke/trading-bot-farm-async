@@ -1,26 +1,34 @@
-"""
+﻿"""
 Telegram Notification Bot Implementation
 
-Monitors the shared IB connection for orders, fills, and cancellations,
-and sends real-time formatted notifications to Telegram.
+Monitors the shared IB connection for:
+- Connection / disconnection state changes
+- Order placement, status transitions, and cancellations
+- Execution fills and commissions
+- Daily account status summary
 """
 
 import asyncio
+from datetime import datetime
 from typing import Any, Dict, Optional, Set
+import pytz
 from ib_async import IB, Trade, Fill
 
 from framework.bot_base import BotBase
 from framework.decorators import trace_all_methods
-from framework.telegram_client import TelegramClient
-from bots.telegram.config import TelegramBotConfig
-from bots.telegram.formatters import (
+from framework.telegram_client import TelegramClient, get_telegram_client
+from framework.account_service import fetch_account_snapshot
+from framework.formatters import (
+    format_connection_state_change,
     format_order_placement,
     format_order_fill,
     format_order_cancelled,
     format_order_status_change,
-    format_startup_message,
-    format_connected_readiness_message
+    format_connected_readiness_message,
+    format_daily_account_summary,
+    format_startup_message
 )
+from bots.telegram.config import TelegramBotConfig
 
 
 @trace_all_methods
@@ -28,8 +36,8 @@ class Bot(BotBase):
     """
     Telegram Notification Bot.
     
-    Subscribes to shared IBKR order and execution events and dispatches
-    real-time HTML alerts to Telegram.
+    Subscribes to shared IBKR order, execution, and connection events,
+    and dispatches real-time HTML alerts to Telegram.
     """
     
     def __init__(
@@ -49,32 +57,17 @@ class Bot(BotBase):
         self._notified_placements: Set[int] = set()
         self._known_order_statuses: Dict[int, str] = {}
         self._processed_executions: Set[str] = set()
+        self._daily_summary_task: Optional[asyncio.Task] = None
         
-        conn_name = self.validated_config.connection
-        telegram_creds = self.system_config.get(f"telegram.connections.{conn_name}")
-        
-        if not telegram_creds:
-            telegram_creds = self.system_config.get("telegram")
-            if isinstance(telegram_creds, dict) and "connections" in telegram_creds:
-                telegram_creds = telegram_creds["connections"].get(conn_name)
-
-        if not telegram_creds or not isinstance(telegram_creds, dict):
-            raise ValueError(
-                f"Telegram connection '{conn_name}' not found in system configuration. "
-                "Ensure 'telegram.connections' is configured in .secret-config.yaml"
-            )
-            
-        token = telegram_creds.get("token")
-        chat_id = telegram_creds.get("chat_id")
-        if not token or not chat_id:
-            raise ValueError(
-                f"Incomplete Telegram credentials for connection '{conn_name}'. "
-                "Both 'token' and 'chat_id' are required."
-            )
-            
-        ssl_verify = telegram_creds.get("ssl_verify", True)
-        self.telegram_client = TelegramClient(token, chat_id, logger=self.logger, ssl_verify=ssl_verify)
-        self.logger.info(f"Initialized Telegram bot with connection '{conn_name}' for chat '{chat_id}'")
+        # Initialize Telegram client via framework factory
+        self.telegram_client = get_telegram_client(
+            self.system_config,
+            connection_name=self.validated_config.connection,
+            logger=self.logger
+        )
+        self.logger.info(
+            f"Initialized Telegram bot with connection '{self.validated_config.connection}'"
+        )
 
     async def start(self) -> None:
         """Start the Telegram notification bot."""
@@ -104,6 +97,13 @@ class Bot(BotBase):
             except Exception as e:
                 self.logger.warning(f"Could not send connected readiness message: {e}", exc_info=True)
             
+        if self.validated_config.daily_summary and self.validated_config.daily_summary.enabled:
+            self._daily_summary_task = asyncio.create_task(self._daily_summary_loop())
+            self.logger.info(
+                f"Started daily account summary scheduler for {self.validated_config.daily_summary.time} "
+                f"({self.validated_config.daily_summary.timezone})"
+            )
+
         while self._running:
             await asyncio.sleep(1)
 
@@ -117,110 +117,137 @@ class Bot(BotBase):
         if not target_account and self.validated_config.notifications.filter_accounts:
             target_account = self.validated_config.notifications.filter_accounts[0]
 
-        # 1. Fetch Account Balances
-        account_summary: Dict[str, Dict[str, str]] = {}
-        try:
-            summary_list = await asyncio.wait_for(
-                self.ib.accountSummaryAsync(target_account),
-                timeout=6.0
-            )
-            for av in summary_list:
-                if not target_account or av.account == target_account:
-                    account_summary[av.tag] = {"value": av.value, "currency": av.currency}
-        except Exception as e:
-            self.logger.warning(f"Could not fetch account summary: {e}")
-            try:
-                for av in self.ib.accountValues(target_account):
-                    account_summary[av.tag] = {"value": av.value, "currency": av.currency}
-            except Exception:
-                pass
+        summary, positions, open_trades = await fetch_account_snapshot(
+            self.ib, account=target_account, logger=self.logger
+        )
 
-        # 2. Fetch Portfolio Positions
-        positions: list = []
-        try:
-            items = self.ib.portfolio(target_account)
-            if items:
-                positions = items
-            else:
-                pos_list = await asyncio.wait_for(
-                    self.ib.reqPositionsAsync(),
-                    timeout=6.0
-                )
-                if target_account:
-                    positions = [p for p in pos_list if p.account == target_account]
-                else:
-                    positions = pos_list
-        except Exception as e:
-            self.logger.warning(f"Could not fetch portfolio positions: {e}")
-            try:
-                positions = self.ib.positions(target_account)
-            except Exception:
-                positions = []
-
-        # Filter out 0 quantity positions
-        positions = [p for p in positions if getattr(p, "position", 0) != 0]
-
-        # 3. Fetch Open Orders
-        open_trades: list = []
-        try:
-            trades = await asyncio.wait_for(
-                self.ib.reqAllOpenOrdersAsync(),
-                timeout=6.0
-            )
-            open_trades = trades or self.ib.openTrades()
-        except Exception as e:
-            self.logger.warning(f"Could not fetch open orders: {e}")
-            open_trades = self.ib.openTrades()
-
-        filtered_trades = []
-        for trade in open_trades:
-            if target_account and trade.order.account and trade.order.account != target_account:
-                continue
-            status = trade.orderStatus.status if trade.orderStatus else ""
-            if status not in ("Filled", "Cancelled", "ApiCancelled"):
-                filtered_trades.append(trade)
-
-        # 4. Format and dispatch
         text = format_connected_readiness_message(
             bot_id=self.bot_id,
             account=target_account,
             connection_name=self.validated_config.connection,
-            account_summary=account_summary,
+            account_summary=summary,
             positions=positions,
-            open_trades=filtered_trades
+            open_trades=open_trades
         )
         self.logger.info(f"Sending connected readiness Telegram alert for account '{target_account}'")
         await self.telegram_client.send_message(text)
+
+    async def _send_daily_summary(self) -> None:
+        """Fetch snapshot and send daily account summary broadcast."""
+        if not self.ib or not self.ib.isConnected():
+            self.logger.warning("Cannot send daily summary: IB is not connected")
+            return
+
+        target_account = self.system_config.get("connection.selected_account", "")
+        summary, positions, open_trades = await fetch_account_snapshot(
+            self.ib, account=target_account, logger=self.logger
+        )
+
+        text = format_daily_account_summary(
+            account=target_account,
+            account_summary=summary,
+            pos_count=len(positions),
+            order_count=len(open_trades)
+        )
+        self.logger.info(f"Sending daily account summary Telegram alert for account '{target_account}'")
+        await self.telegram_client.send_message(text)
+
+    async def _daily_summary_loop(self) -> None:
+        """Background loop monitoring scheduled time for daily account summary."""
+        cfg = self.validated_config.daily_summary
+        if not cfg or not cfg.enabled:
+            return
+
+        tz = pytz.timezone(cfg.timezone)
+        last_sent_date = None
+
+        while self._running:
+            try:
+                now = datetime.now(tz)
+                current_time_str = now.strftime("%H:%M")
+                current_date_str = now.strftime("%Y-%m-%d")
+
+                if current_time_str == cfg.time and last_sent_date != current_date_str:
+                    last_sent_date = current_date_str
+                    await self._send_daily_summary()
+
+                await asyncio.sleep(25)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.error(f"Error in daily summary loop: {e}", exc_info=True)
+                await asyncio.sleep(30)
 
     async def stop(self) -> None:
         """Stop the Telegram notification bot."""
         self.logger.info(f"Stopping Telegram notification bot: {self.bot_id}")
         self._running = False
+        if self._daily_summary_task and not self._daily_summary_task.done():
+            self._daily_summary_task.cancel()
+            try:
+                await self._daily_summary_task
+            except asyncio.CancelledError:
+                pass
         self._unregister_events()
         self.cleanup()
-
 
     def _register_events(self) -> None:
         """Register listeners on IB events."""
         if not self.ib or self._events_registered:
             return
+        self.ib.connectedEvent += self._on_connected
+        self.ib.disconnectedEvent += self._on_disconnected
         self.ib.openOrderEvent += self._on_open_order
         self.ib.orderStatusEvent += self._on_order_status
         self.ib.execDetailsEvent += self._on_exec_details
         self._events_registered = True
-        self.logger.info("Registered Telegram order event handlers")
+        self.logger.info("Registered Telegram order and connection event handlers")
 
     def _unregister_events(self) -> None:
         """Unregister listeners on IB events."""
         if not self.ib or not self._events_registered:
             return
         try:
+            self.ib.connectedEvent -= self._on_connected
+            self.ib.disconnectedEvent -= self._on_disconnected
             self.ib.openOrderEvent -= self._on_open_order
             self.ib.orderStatusEvent -= self._on_order_status
             self.ib.execDetailsEvent -= self._on_exec_details
         except Exception as e:
             self.logger.warning(f"Error unregistering IB events: {e}")
         self._events_registered = False
+
+    def _on_connected(self) -> None:
+        """Handle IB connection established event."""
+        if not self._running:
+            return
+        self.logger.info("IBKR connection established event received")
+        if self.validated_config.notifications.notify_on_connection:
+            host = self.system_config.get("connection.host", "")
+            port = self.system_config.get("connection.port", 0)
+            acct = self.system_config.get("connection.selected_account", "")
+            text = format_connection_state_change(
+                connected=True, host=str(host), port=int(port or 0), account=str(acct)
+            )
+            self._dispatch_message(text)
+
+    def _on_disconnected(self) -> None:
+        """Handle IB connection dropped event."""
+        if not self._running:
+            return
+        self.logger.warning("IBKR connection dropped event received")
+        if self.validated_config.notifications.notify_on_connection:
+            host = self.system_config.get("connection.host", "")
+            port = self.system_config.get("connection.port", 0)
+            acct = self.system_config.get("connection.selected_account", "")
+            text = format_connection_state_change(
+                connected=False,
+                host=str(host),
+                port=int(port or 0),
+                account=str(acct),
+                details="Connection to Gateway/TWS dropped"
+            )
+            self._dispatch_message(text)
 
     def _should_filter_trade(self, trade: Trade) -> bool:
         """Check if trade matches configured account and orderRef filters."""
