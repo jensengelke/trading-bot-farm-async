@@ -6,7 +6,7 @@ Manages a shared IB connection that can be used by multiple bots.
 
 import asyncio
 from typing import Optional
-from ib_async import IB
+from ib_async import IB, Forex
 import logging
 from framework.request_tracker import get_error_dispatcher
 
@@ -148,7 +148,10 @@ class IBConnectionManager:
                         port=port,
                         clientId=client_id,
                         connectTimeout=10,
-                        appStartupTime=120
+                        appStartupTime=120,
+                        appTimeout=30,
+                        probeContract=Forex("EURUSD"),
+                        probeTimeout=30
                     )
                     
                     self._ibc_config = config_dict
